@@ -21,7 +21,7 @@ Ein intelligenter Antwortgenerator für Kundenbewertungen, entwickelt mit Flask 
 ```bash
 git clone https://github.com/<username>/smart-reply-generator.git
 cd smart-reply-generator
-
+```
 ### 2. Virtuelle Umgebung erstellen (optional)
 
 python -m venv venv
