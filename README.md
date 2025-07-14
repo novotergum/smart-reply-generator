@@ -51,11 +51,12 @@ smart-reply-generator/
 ├── main.py
 ├── generate_prompt.py
 ├── templates/
-│   └── index.html
+│   └── generate.html
 ├── .env
 ├── prompt.xml
 ├── requirements.txt
-└── README.m
+└── README.md
+```
 
 ## 🛡 Lizenz
 
