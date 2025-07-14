@@ -51,7 +51,7 @@ smart-reply-generator/
 ├── main.py
 ├── generate_prompt.py
 ├── templates/
-│   └── generate.html
+│   └── index.html
 ├── .env
 ├── prompt.xml
 ├── requirements.txt
