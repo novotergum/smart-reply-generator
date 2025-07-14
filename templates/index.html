@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Smart Reply Generator</title>
+</head>
+<body>
+<h2>Antwortgenerator für Kundenbewertungen</h2>
+<form method="post" action="/generate">
+    <label>Bewertungstext:<br><textarea name="review" rows="4" cols="50"></textarea></label><br>
+    <label>Tonalität:
+        <select name="selectedTone">
+            <option value="warm">Warm</option>
+            <option value="friendly">Friendly</option>
+            <option value="neutral">Neutral</option>
+            <option value="professional">Professional</option>
+            <option value="casual">Casual</option>
+        </select>
+    </label><br>
+    <label>Sprache:
+        <select name="languageMode">
+            <option value="de">Deutsch</option>
+            <option value="en">Englisch</option>
+        </select>
+    </label><br>
+    <label>Signatur verwenden?
+        <input type="checkbox" name="corporateSignature" value="Ihr NOVOTERGUM Team">
+    </label><br>
+    <input type="submit" value="Antwort generieren">
+</form>
+
+{% if reply %}
+    <h3>Generierte Antwort:</h3>
+    <p>{{ reply }}</p>
+{% endif %}
+</body>
+</html>
