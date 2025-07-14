@@ -18,6 +18,7 @@ Ein intelligenter Antwortgenerator für Kundenbewertungen, entwickelt mit Flask 
 
 ### 1. Projekt klonen
 
+```bash
 git clone https://github.com/<username>/smart-reply-generator.git
 cd smart-reply-generator
 
