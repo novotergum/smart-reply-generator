@@ -46,15 +46,16 @@ Rufe im Browser auf: http://127.0.0.1:5000/generate
 
 ## 📁 Projektstruktur
 
+```text
 smart-reply-generator/
 ├── main.py
 ├── generate_prompt.py
 ├── templates/
-│ └── index.html
+│   └── index.html
 ├── .env
 ├── prompt.xml
 ├── requirements.txt
-└── README.md
+└── README.m
 
 ## 🛡 Lizenz
 
