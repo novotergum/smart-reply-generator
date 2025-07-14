@@ -21,26 +21,14 @@ Ein intelligenter Antwortgenerator für Kundenbewertungen, entwickelt mit Flask 
 git clone https://github.com/<username>/smart-reply-generator.git
 cd smart-reply-generator
 
-shell
-Kopieren
-Bearbeiten
-
 ### 2. Virtuelle Umgebung erstellen (optional)
 
 python -m venv venv
 source venv/bin/activate # Windows: venv\Scripts\activate
 
-shell
-Kopieren
-Bearbeiten
-
 ### 3. Abhängigkeiten installieren
 
 pip install -r requirements.txt
-
-bash
-Kopieren
-Bearbeiten
 
 ### 4. Umgebungsvariablen konfigurieren
 
@@ -48,17 +36,9 @@ Erstelle eine Datei `.env` mit folgendem Inhalt:
 
 OPENAI_API_KEY=dein-api-key-hier
 
-shell
-Kopieren
-Bearbeiten
-
 ### 5. Lokale Ausführung
 
 flask run
-
-yaml
-Kopieren
-Bearbeiten
 
 Rufe im Browser auf: http://127.0.0.1:5000/generate
 
