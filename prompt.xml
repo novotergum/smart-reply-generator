@@ -89,6 +89,11 @@
         sowie den Fokus auf nachhaltige Verbesserung der Gesundheit.
     </line>
 
+    <line condition="if:reviewTag=Service/Erreichbarkeit">
+        Gehe besonders auf Erreichbarkeit, Terminvergabe und Service ein.
+        Betone transparente Kommunikation und das Bemühen, Abläufe stetig zu verbessern.
+    </line>
+
     <line condition="if:reviewTag=Kritische Inhalte">
         Formuliere besonders sorgfältig, ruhig und deeskalierend.
         Vermeide detaillierte Darstellungen interner Abläufe oder personenbezogener Informationen.
