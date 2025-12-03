@@ -141,4 +141,68 @@
 
         <div class="field">
             <label for="reviewTag">Art der Bewertung</label>
-            {% set tag = v.get("
+            {% set tag = v.get("reviewTag", "") %}
+            <select id="reviewTag" name="reviewTag">
+                <option value="">– optional, zur besseren Einordnung –</option>
+                <option value="Allgemeines Feedback" {% if tag == "Allgemeines Feedback" %}selected{% endif %}>
+                    Allgemeines Feedback
+                </option>
+                <option value="Therapie/Behandlung" {% if tag == "Therapie/Behandlung" %}selected{% endif %}>
+                    Therapie / Behandlung
+                </option>
+                <option value="Kritische Inhalte" {% if tag == "Kritische Inhalte" %}selected{% endif %}>
+                    Kritische Inhalte
+                </option>
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="anrede">Anrede (optional)</label>
+            <input
+                type="text"
+                id="anrede"
+                name="anrede"
+                placeholder='z.&nbsp;B. "Liebe Frau Müller," oder "Guten Tag,"'
+                value="{{ v.get('anrede', '') }}"
+            />
+        </div>
+
+        <div class="field">
+            <label for="corporateSignature">Signatur</label>
+            <input
+                type="text"
+                id="corporateSignature"
+                name="corporateSignature"
+                placeholder='z.&nbsp;B. "Ihr NOVOTERGUM Team Duisburg"'
+                value="{{ v.get('corporateSignature', 'Ihr NOVOTERGUM Team') }}"
+            />
+        </div>
+
+        <div class="field">
+            <label for="kontaktMail">Kontakt-E-Mail (optional)</label>
+            <input
+                type="email"
+                id="kontaktMail"
+                name="kontaktMail"
+                placeholder="z. B. duisburg@novotergum.de"
+                value="{{ v.get('kontaktMail', '') }}"
+            />
+            <div class="hint">
+                Wird vor allem bei kritischen Bewertungen genutzt, um einen direkten Kontakt anzubieten.
+            </div>
+        </div>
+
+        <!-- Sprache wird im Backend auf 'de' gesetzt, daher kein Feld nötig -->
+
+        <button type="submit">Antwortvorschlag erzeugen</button>
+    </form>
+
+    {% if reply %}
+        <div class="output">
+            <h2>Antwortvorschlag</h2>
+            <pre>{{ reply }}</pre>
+        </div>
+    {% endif %}
+</div>
+</body>
+</html>
