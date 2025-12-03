@@ -18,7 +18,8 @@ if not OPENAI_API_KEY:
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
-app = Flask(__name__)
+# Flask-App initialisieren, Templates liegen im Ordner "templates"
+app = Flask(__name__, template_folder="templates")
 
 
 def derive_rating_category(user_input: dict) -> None:
@@ -47,6 +48,14 @@ def derive_rating_category(user_input: dict) -> None:
         user_input["ratingCategory"] = "kritisch"
 
 
+@app.route("/health", methods=["GET"])
+def health():
+    """
+    Einfache Health-Check-Route für Monitoring.
+    """
+    return "ok", 200
+
+
 @app.route("/", methods=["GET"])
 def form():
     """
@@ -55,7 +64,7 @@ def form():
     default_values = {
         "review": "",
         "selectedTone": "friendly",
-        "languageMode": "de",  # wir nutzen standardmäßig Deutsch
+        "languageMode": "de",  # standardmäßig Deutsch
         "corporateSignature": "Ihr NOVOTERGUM Team",
 
         "ratingStars": "",
