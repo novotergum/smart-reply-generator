@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Smart Reply Generator für Bewertungen</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          margin: 0;
+          padding: 0;
+          background: #f5f5f5;
+        }
+        .container {
+          max-width: 800px;
+          margin: 24px auto;
+          padding: 16px;
+          background: #ffffff;
+          border-radius: 8px;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+        }
+        h1 {
+          font-size: 1.4rem;
+          margin-bottom: 0.25rem;
+        }
+        .subtitle {
+          font-size: 0.9rem;
+          color: #555;
+          margin-bottom: 1.5rem;
+        }
+        .field {
+          margin-bottom: 1.2rem;
+        }
+        label {
+          display: block;
+          font-weight: 600;
+          margin-bottom: 0.3rem;
+          font-size: 0.9rem;
+        }
+        textarea {
+          width: 100%;
+          min-height: 140px;
+          padding: 8px;
+          border-radius: 4px;
+          border: 1px solid #ccc;
+          font: inherit;
+          resize: vertical;
+        }
+        select, input[type="text"] {
+          width: 100%;
+          padding: 8px;
+          border-radius: 4px;
+          border: 1px solid #ccc;
+          font: inherit;
+        }
+        button {
+          display: inline-block;
+          padding: 10px 16px;
+          border-radius: 4px;
+          border: none;
+          cursor: pointer;
+          font-weight: 600;
+          font-size: 0.95rem;
+          background: #ff7a00;
+          color: #ffffff;
+        }
+        button:hover {
+          opacity: 0.9;
+        }
+        .output {
+          margin-top: 2rem;
+          padding-top: 1.5rem;
+          border-top: 1px solid #eee;
+        }
+        .output h2 {
+          font-size: 1.1rem;
+          margin-bottom: 0.8rem;
+        }
+        pre {
+          white-space: pre-wrap;
+          word-wrap: break-word;
+          background: #fafafa;
+          border-radius: 4px;
+          padding: 12px;
+          border: 1px solid #eee;
+          font-size: 0.95rem;
+        }
+        .hint {
+          font-size: 0.8rem;
+          color: #777;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    {% set v = values or {} %}
+
+    <h1>Smart Reply Generator für Bewertungen</h1>
+    <p class="subtitle">
+        Füge eine Google- oder Portalbewertung ein und erhalte einen fertigen Antwortvorschlag.
+    </p>
+
+    <form method="post" action="/generate">
+        <div class="field">
+            <label for="review">Bewertungstext</label>
+            <textarea
+                id="review"
+                name="review"
+                placeholder="Füge hier die Originalbewertung ein …"
+                required
+            >{{ v.get("review", "") }}</textarea>
+        </div>
+
+        <div class="field">
+            <label for="selectedTone">Tonfall der Antwort</label>
+            {% set tone = v.get("selectedTone", "friendly") %}
+            <select id="selectedTone" name="selectedTone">
+                <option value="warm" {% if tone == "warm" %}selected{% endif %}>Warm &amp; empathisch</option>
+                <option value="friendly" {% if tone == "friendly" %}selected{% endif %}>Freundlich &amp; nahbar</option>
+                <option value="neutral" {% if tone == "neutral" %}selected{% endif %}>Neutral &amp; sachlich</option>
+                <option value="professional" {% if tone == "professional" %}selected{% endif %}>Formell &amp; professionell</option>
+                <option value="casual" {% if tone == "casual" %}selected{% endif %}>Locker &amp; informell</option>
+            </select>
+        </div>
+
+        <div class="field">
+            <label for="languageMode">Sprache der Antwort</label>
+            {% set lang = v.get("languageMode", "de") %}
+            <select id="languageMode" name="languageMode">
+                <option value="de" {% if lang == "de" %}selected{% endif %}>Deutsch</option>
+                <option value="en" {% if lang == "en" %}selected{% endif %}>Englisch</option>
+            </select>
+            <div class="hint">
+                Wenn du ausschließlich deutsche Antworten möchtest, kannst du die Englisch-Option hier und in prompt.xml entfernen.
+            </div>
+        </div>
+
+        <div class="field">
+            <label for="corporateSignature">Signatur (optional)</label>
+            <input
+                type="text"
+                id="corporateSignature"
+                name="corporateSignature"
+                placeholder='z. B. "Ihr NOVOTERGUM Team Düsseldorf"'
+                value="{{ v.get('corporateSignature', '') }}"
+            />
+        </div>
+
+        <button type="submit">Antwortvorschlag erzeugen</button>
+    </form>
+
+    {% if reply %}
+        <div class="output">
+            <h2>Antwortvorschlag</h2>
+            <pre>{{ reply }}</pre>
+        </div>
+    {% endif %}
+</div>
+</body>
+</html>
