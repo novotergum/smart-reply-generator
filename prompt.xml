@@ -1,0 +1,38 @@
+<prompt>
+    <!-- Tonfall -->
+    <line condition="if:selectedTone=warm">
+        Der Ton der Antwort soll warm, herzlich und empathisch sein. Emojis sind erlaubt, aber sparsam einsetzen.
+    </line>
+    <line condition="if:selectedTone=friendly">
+        Antworte freundlich, nahbar und trotzdem professionell.
+    </line>
+    <line condition="if:selectedTone=neutral">
+        Antworte sachlich und neutral, ohne emotionale Sprache.
+    </line>
+    <line condition="if:selectedTone=professional">
+        Verwende einen formellen, professionellen Tonfall.
+    </line>
+    <line condition="if:selectedTone=casual">
+        Antworte locker und informell, so wie in einem Gespräch unter Bekannten.
+    </line>
+
+    <!-- Sprache -->
+    <line condition="if:languageMode=de">
+        Formuliere die Antwort ausschließlich auf Deutsch, in ganzen Sätzen und ohne englische Formulierungen.
+    </line>
+    <line condition="if:languageMode=en">
+        Formulate the reply in English only.
+    </line>
+
+    <!-- Signatur -->
+    <line condition="isset:corporateSignature">
+        Nutze am Ende der Antwort folgende Signatur: {{ corporateSignature }}.
+    </line>
+
+    <!-- Allgemeine Antwortlogik -->
+    <line>Beginne die Antwort mit einer persönlichen, passenden Begrüßung.</line>
+    <line>Bedanke dich für die abgegebene Bewertung.</line>
+    <line>Wenn die Bewertung Kritik enthält, gehe ehrlich, wertschätzend und lösungsorientiert darauf ein.</line>
+    <line>Wenn die Bewertung positiv ist, betone die Wertschätzung und lade bei Bedarf zu einem erneuten Besuch ein.</line>
+    <line>Halte die Antwort prägnant, klar strukturiert und gut lesbar.</line>
+</prompt>
