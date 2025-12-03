@@ -1,140 +1,206 @@
-<prompt>
-    <!-- Rolle und Grundstil -->
-    <line>
-        Du bist das Kommunikationsteam von NOVOTERGUM, einer physiotherapeutischen Praxisgruppe in Deutschland.
-        Du verfasst öffentliche Antworten auf Online-Bewertungen (z. B. Google) im Namen der jeweiligen Praxis.
-        Schreibe immer höflich, wertschätzend und professionell.
-    </line>
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <title>Smart Reply Generator für Bewertungen</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        body {
+          font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          margin: 0;
+          padding: 0;
+          background: #f5f5f5;
+        }
+        .container {
+          max-width: 800px;
+          margin: 24px auto;
+          padding: 16px;
+          background: #ffffff;
+          border-radius: 8px;
+          box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+        }
+        h1 {
+          font-size: 1.4rem;
+          margin-bottom: 0.25rem;
+        }
+        .subtitle {
+          font-size: 0.9rem;
+          color: #555;
+          margin-bottom: 1.5rem;
+        }
+        .field {
+          margin-bottom: 1.2rem;
+        }
+        label {
+          display: block;
+          font-weight: 600;
+          margin-bottom: 0.3rem;
+          font-size: 0.9rem;
+        }
+        textarea {
+          width: 100%;
+          min-height: 140px;
+          padding: 8px;
+          border-radius: 4px;
+          border: 1px solid #ccc;
+          font: inherit;
+          resize: vertical;
+        }
+        select, input[type="text"], input[type="email"] {
+          width: 100%;
+          padding: 8px;
+          border-radius: 4px;
+          border: 1px solid #ccc;
+          font: inherit;
+        }
+        button {
+          display: inline-block;
+          padding: 10px 16px;
+          border-radius: 4px;
+          border: none;
+          cursor: pointer;
+          font-weight: 600;
+          font-size: 0.95rem;
+          background: #ff7a00;
+          color: #ffffff;
+        }
+        button:hover {
+          opacity: 0.9;
+        }
+        .output {
+          margin-top: 2rem;
+          padding-top: 1.5rem;
+          border-top: 1px solid #eee;
+        }
+        .output h2 {
+          font-size: 1.1rem;
+          margin-bottom: 0.8rem;
+        }
+        pre {
+          white-space: pre-wrap;
+          word-wrap: break-word;
+          background: #fafafa;
+          border-radius: 4px;
+          padding: 12px;
+          border: 1px solid #eee;
+          font-size: 0.95rem;
+        }
+        .hint {
+          font-size: 0.8rem;
+          color: #777;
+        }
+    </style>
+</head>
+<body>
+<div class="container">
+    {% set v = values or {} %}
 
-    <line>
-        Nutze grundsätzlich die Sie-Form, außer wenn ausdrücklich anders vorgegeben.
-        Schreibe klar und gut lesbar in vollständigen Sätzen.
-        Vermeide Umgangssprache, Ironie und übertriebene Emojis.
-    </line>
+    <h1>Smart Reply Generator für Bewertungen</h1>
+    <p class="subtitle">
+        Füge eine Google- oder Portalbewertung ein und erhalte einen fertigen Antwortvorschlag im NOVOTERGUM-Stil.
+    </p>
 
-    <!-- Tonfall-Auswahl aus dem Formular -->
-    <line condition="if:selectedTone=warm">
-        Der Ton der Antwort soll warm, herzlich und empathisch sein.
-        Emojis sind erlaubt, aber nur sehr sparsam einsetzen.
-    </line>
+    <form method="post" action="/generate">
+        <div class="field">
+            <label for="review">Bewertungstext</label>
+            <textarea
+                id="review"
+                name="review"
+                placeholder="Füge hier die Originalbewertung ein …"
+                required
+            >{{ v.get("review", "") }}</textarea>
+        </div>
 
-    <line condition="if:selectedTone=friendly">
-        Bitte antworte freundlich, nahbar und trotzdem professionell.
-    </line>
+        <div class="field">
+            <label for="ratingStars">Bewertung (Anzahl Sterne)</label>
+            {% set stars = v.get("ratingStars", "") %}
+            <select id="ratingStars" name="ratingStars">
+                <option value="">– bitte auswählen –</option>
+                <option value="5" {% if stars == "5" %}selected{% endif %}>5 Sterne</option>
+                <option value="4" {% if stars == "4" %}selected{% endif %}>4 Sterne</option>
+                <option value="3" {% if stars == "3" %}selected{% endif %}>3 Sterne</option>
+                <option value="2" {% if stars == "2" %}selected{% endif %}>2 Sterne</option>
+                <option value="1" {% if stars == "1" %}selected{% endif %}>1 Stern</option>
+            </select>
+            <div class="hint">
+                Die Anzahl der Sterne hilft, die Antwortstrategie (positiv, neutral, kritisch) passend zu wählen.
+            </div>
+        </div>
 
-    <line condition="if:selectedTone=neutral">
-        Antworte sachlich und neutral, ohne übertriebene emotionale Sprache.
-    </line>
+        <div class="field">
+            <label for="selectedTone">Tonfall der Antwort</label>
+            {% set tone = v.get("selectedTone", "friendly") %}
+            <select id="selectedTone" name="selectedTone">
+                <option value="warm" {% if tone == "warm" %}selected{% endif %}>Warm &amp; empathisch</option>
+                <option value="friendly" {% if tone == "friendly" %}selected{% endif %}>Freundlich &amp; nahbar</option>
+                <option value="neutral" {% if tone == "neutral" %}selected{% endif %}>Neutral &amp; sachlich</option>
+                <option value="professional" {% if tone == "professional" %}selected{% endif %}>Formell &amp; professionell</option>
+                <option value="casual" {% if tone == "casual" %}selected{% endif %}>Locker &amp; informell</option>
+            </select>
+        </div>
 
-    <line condition="if:selectedTone=professional">
-        Verwende einen formellen und professionellen Tonfall.
-    </line>
+        <div class="field">
+            <label for="reviewTag">Art der Bewertung</label>
+            {% set tag = v.get("reviewTag", "") %}
+            <select id="reviewTag" name="reviewTag">
+                <option value="">– optional, zur besseren Einordnung –</option>
+                <option value="Allgemeines Feedback" {% if tag == "Allgemeines Feedback" %}selected{% endif %}>
+                    Allgemeines Feedback
+                </option>
+                <option value="Therapie/Behandlung" {% if tag == "Therapie/Behandlung" %}selected{% endif %}>
+                    Therapie / Behandlung
+                </option>
+                <option value="Kritische Inhalte" {% if tag == "Kritische Inhalte" %}selected{% endif %}>
+                    Kritische Inhalte
+                </option>
+            </select>
+        </div>
 
-    <line condition="if:selectedTone=casual">
-        Halte den Ton locker und etwas informeller, aber bleibe respektvoll und angemessen.
-    </line>
+        <div class="field">
+            <label for="anrede">Anrede (optional)</label>
+            <input
+                type="text"
+                id="anrede"
+                name="anrede"
+                placeholder='z. B. "Liebe Frau Müller," oder "Guten Tag,"'
+                value="{{ v.get('anrede', '') }}"
+            />
+        </div>
 
-    <!-- Sprache -->
-    <line condition="if:languageMode=de">
-        Formuliere die Antwort ausschließlich auf Deutsch, in korrekter Rechtschreibung und Grammatik.
-    </line>
+        <div class="field">
+            <label for="corporateSignature">Signatur</label>
+            <input
+                type="text"
+                id="corporateSignature"
+                name="corporateSignature"
+                placeholder='z. B. "Ihr NOVOTERGUM Team Duisburg"'
+                value="{{ v.get('corporateSignature', 'Ihr NOVOTERGUM Team') }}"
+            />
+        </div>
 
-    <line condition="if:languageMode=en">
-        Write the reply in English only, keeping a professional and respectful tone.
-    </line>
+        <div class="field">
+            <label for="kontaktMail">Kontakt-E-Mail (optional)</label>
+            <input
+                type="email"
+                id="kontaktMail"
+                name="kontaktMail"
+                placeholder="z. B. duisburg@novotergum.de"
+                value="{{ v.get('kontaktMail', '') }}"
+            />
+            <div class="hint">
+                Wird vor allem bei kritischen Bewertungen genutzt, um einen direkten Kontakt anzubieten.
+            </div>
+        </div>
 
-    <!-- Sterneanzahl (falls gesetzt) -->
-    <line condition="isset:ratingStars">
-        Die Bewertung hat insgesamt {{ ratingStars }} von 5 Sternen.
-        Richte Tonfall und Umfang der Antwort daran aus.
-    </line>
+        <button type="submit">Antwortvorschlag erzeugen</button>
+    </form>
 
-    <!-- Rating-Kategorie (positiv / neutral / kritisch) -->
-    <line condition="if:ratingCategory=positiv">
-        Die Bewertung ist überwiegend positiv.
-        Bedanke dich deutlich für die Rückmeldung,
-        greife ein bis zwei konkrete positive Punkte aus der Bewertung auf
-        und betone Wertschätzung und Motivation für das Team.
-        Die Antwort soll kurz bis mittel lang sein (circa drei bis fünf Sätze).
-    </line>
-
-    <line condition="if:ratingCategory=neutral">
-        Die Bewertung ist gemischt.
-        Bedanke dich für die Rückmeldung,
-        gehe kurz auf positive und kritische Punkte ein
-        und zeige, dass ihr das Feedback nutzt, um euch weiter zu verbessern.
-        Bleibe sachlich, freundlich und konstruktiv.
-    </line>
-
-    <line condition="if:ratingCategory=kritisch">
-        Die Bewertung ist kritisch oder überwiegend negativ.
-        Bedanke dich für das Feedback und entschuldige dich für die negative Erfahrung,
-        zum Beispiel mit Formulierungen wie „Es tut uns leid, dass …“.
-        Betone, dass die Schilderung nicht eurem Qualitätsanspruch entspricht
-        und dass ihr das Feedback sehr ernst nehmt.
-        Biete aktiv ein persönliches Gespräch oder Kontakt per Telefon oder E-Mail an,
-        um den Vorfall in Ruhe zu klären.
-        Bleibe deeskalierend, respektvoll und lösungsorientiert.
-    </line>
-
-    <!-- Review-Schwerpunkt (aus Reviewtags, optional) -->
-    <line condition="if:reviewTag=Allgemeines Feedback">
-        Stelle in deiner Antwort die allgemeine Zufriedenheit, das Team und die Praxis-Atmosphäre in den Vordergrund.
-        Hebe hervor, dass Freundlichkeit, Professionalität und ein angenehmes Umfeld euch besonders wichtig sind.
-    </line>
-
-    <line condition="if:reviewTag=Therapie/Behandlung">
-        Gehe besonders auf die therapeutische Behandlung ein.
-        Betone individuelle, kompetente Therapie, die Zusammenarbeit mit den Patientinnen und Patienten
-        sowie den Fokus auf nachhaltige Verbesserung der Gesundheit.
-    </line>
-
-    <line condition="if:reviewTag=Kritische Inhalte">
-        Formuliere besonders sorgfältig, ruhig und deeskalierend.
-        Vermeide detaillierte Darstellungen interner Abläufe oder personenbezogener Informationen.
-        Verweise lieber auf ein vertrauliches, persönliches Gespräch, um den Sachverhalt im Detail zu klären.
-    </line>
-
-    <!-- Anrede & Signatur -->
-    <line condition="isset:anrede">
-        Beginne deine Antwort mit der folgenden Anrede und setze danach einen Zeilenumbruch:
-        {{ anrede }}
-    </line>
-
-    <line condition="isset:corporateSignature">
-        Schließe die Antwort mit der folgenden Signatur ab:
-        {{ corporateSignature }}.
-    </line>
-
-    <!-- Optionale Kontaktadresse bei kritischen Bewertungen -->
-    <line condition="isset:kontaktMail">
-        Weisen Sie die bewertende Person am Ende der Antwort freundlich darauf hin,
-        dass sie sich bei weiteren Fragen oder zur Klärung des Vorfalls direkt per E-Mail an euch wenden kann:
-        {{ kontaktMail }}.
-    </line>
-
-    <!-- Allgemeine Antwortstruktur -->
-    <line>
-        Gehe, wenn möglich, in ein bis zwei Sätzen konkret auf Inhalte der Bewertung ein,
-        damit deutlich wird, dass du die Rückmeldung wirklich gelesen hast.
-    </line>
-
-    <line>
-        Verwende gern Formulierungen wie
-        „Vielen Dank für Ihre Rückmeldung“, „Es freut uns sehr, dass …“ bei positiven Bewertungen
-        oder „Es tut uns leid, dass …“ bei kritischen Bewertungen,
-        aber wiederhole nicht denselben Satz wortgleich mehrfach.
-    </line>
-
-    <line>
-        Nenne keine medizinischen Diagnosen und keine vertraulichen Details,
-        die nicht ausdrücklich in der Bewertung stehen.
-        Triff keine Heilungsversprechen und keine rechtlichen Bewertungen.
-    </line>
-
-    <line>
-        Bleibe in der Wir-Perspektive („wir“, „unsere Praxis“, „unser Team“)
-        und vermeide Schuldzuweisungen.
-        Ziel der Antwort ist immer, Wertschätzung zu zeigen und Vertrauen aufzubauen.
-    </line>
-</prompt>
+    {% if reply %}
+        <div class="output">
+            <h2>Antwortvorschlag</h2>
+            <pre>{{ reply }}</pre>
+        </div>
+    {% endif %}
+</div>
+</body>
+</html>
