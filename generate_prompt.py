@@ -1,73 +1,65 @@
-import re
 import xml.etree.ElementTree as ET
-from typing import Mapping, Any
 
 
-def build_prompt(user_input: Mapping[str, Any]) -> str:
+def render_line_text(line, data: dict) -> str:
     """
-    Liest prompt.xml ein, evaluiert die Bedingungen und baut daraus den endgültigen Prompt
-    für das Sprachmodell.
+    Ersetzt Platzhalter {{ key }} in einer <line>-Zeile mit Werten aus data.
     """
-    tree = ET.parse("prompt.xml")
-    root = tree.getroot()
+    text = (line.text or "").strip()
+    if not text:
+        return ""
 
-    prompt_lines: list[str] = []
-
-    # Alle <line>-Elemente prüfen
-    for line in root.findall("line"):
-        condition = line.attrib.get("condition")
-        if evaluate_condition(condition, user_input):
-            text = (line.text or "").strip()
-            if text:
-                text = substitute_placeholders(text, user_input)
-                prompt_lines.append(text)
-
-    # Bewertungstext anhängen
-    review_text = user_input.get("review", "")
-    prompt_lines.append(
-        "Hier ist die Originalbewertung, auf die du bitte antwortest:\n\n"
-        + review_text
-    )
-
-    # Alles zu einem Prompt zusammenfügen
-    return "\n\n".join(prompt_lines)
+    # alle Keys, die im data-Dict vorhanden sind, dürfen verwendet werden
+    for key, value in data.items():
+        placeholder = "{{ " + key + " }}"
+        if placeholder in text:
+            text = text.replace(placeholder, str(value))
+    return text
 
 
-def substitute_placeholders(text: str, user_input: Mapping[str, Any]) -> str:
+def evaluate_condition(condition: str | None, data: dict) -> bool:
     """
-    Ersetzt Platzhalter der Form {{ feldname }} durch den jeweiligen Wert
-    aus user_input, falls vorhanden.
-    """
-
-    def repl(match: re.Match) -> str:
-        key = match.group(1).strip()
-        return str(user_input.get(key, ""))
-
-    return re.sub(r"\{\{\s*([^}]+)\s*\}\}", repl, text)
-
-
-def evaluate_condition(condition: str | None, user_input: Mapping[str, Any]) -> bool:
-    """
-    Unterstützte Syntax:
-      - kein condition-Attribut    -> Zeile wird immer verwendet
-      - "isset:feldname"           -> Zeile wird verwendet, wenn Feld gesetzt und nicht leer ist
-      - "if:feldname=wert"         -> Zeile wird verwendet, wenn user_input[feldname] == "wert"
+    Unterstützt:
+    - kein condition                 -> True
+    - "isset:feld"                  -> bool(data[feld])
+    - "if:feld=wert"                -> data[feld] == wert
     """
     if not condition:
         return True
 
-    # Bedingung: isset:<field>
     if condition.startswith("isset:"):
         key = condition.split(":", 1)[1]
-        value = user_input.get(key)
-        return bool(value)
+        val = data.get(key)
+        return bool(val)
 
-    # Bedingung: if:<field>=<value>
     if condition.startswith("if:"):
         expr = condition[3:]
         if "=" in expr:
             key, value = expr.split("=", 1)
-            return user_input.get(key) == value
+            return str(data.get(key, "")).strip() == value.strip()
 
-    # Standard: Bedingung nicht erkannt -> Zeile nicht verwenden
     return False
+
+
+def build_prompt(data: dict) -> str:
+    """
+    Baut den Prompt auf Basis der prompt.xml und der übergebenen Daten.
+    """
+    tree = ET.parse("prompt.xml")
+    root = tree.getroot()
+    lines: list[str] = []
+
+    for line in root.findall("line"):
+        condition = line.attrib.get("condition")
+        if evaluate_condition(condition, data):
+            rendered = render_line_text(line, data)
+            if rendered:
+                lines.append(rendered)
+
+    # Am Ende immer die Originalbewertung anhängen
+    review_text = (data.get("review") or "").strip()
+    if review_text:
+        lines.append("Originalbewertung (unverändert):")
+        lines.append(review_text)
+
+    return "\n\n".join(lines)
