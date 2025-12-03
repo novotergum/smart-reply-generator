@@ -25,7 +25,8 @@ def build_prompt(user_input: Mapping[str, Any]) -> str:
     # Bewertungstext anhängen
     review_text = user_input.get("review", "")
     prompt_lines.append(
-        "Hier ist die Bewertung, auf die du bitte antwortest:\n\n" + review_text
+        "Hier ist die Originalbewertung, auf die du bitte antwortest:\n\n"
+        + review_text
     )
 
     # Alles zu einem Prompt zusammenfügen
