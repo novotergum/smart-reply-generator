@@ -8,12 +8,14 @@
 
     <line>
         Nutze grundsätzlich die Sie-Form, außer wenn ausdrücklich anders vorgegeben.
-        Schreibe klar und gut lesbar in vollständigen Sätzen. Vermeide Umgangssprache und Ironie.
+        Schreibe klar und gut lesbar in vollständigen Sätzen.
+        Vermeide Umgangssprache, Ironie und übertriebene Emojis.
     </line>
 
     <!-- Tonfall-Auswahl aus dem Formular -->
     <line condition="if:selectedTone=warm">
-        Der Ton der Antwort soll warm, herzlich und empathisch sein. Emojis sind erlaubt, aber nur sparsam einsetzen.
+        Der Ton der Antwort soll warm, herzlich und empathisch sein.
+        Emojis sind erlaubt, aber nur sehr sparsam einsetzen.
     </line>
 
     <line condition="if:selectedTone=friendly">
@@ -29,8 +31,7 @@
     </line>
 
     <line condition="if:selectedTone=casual">
-        Halte den Ton locker und informell, wie in einem Gespräch unter Bekannten,
-        aber bleibe respektvoll und angemessen.
+        Halte den Ton locker und etwas informeller, aber bleibe respektvoll und angemessen.
     </line>
 
     <!-- Sprache -->
@@ -42,17 +43,25 @@
         Write the reply in English only, keeping a professional and respectful tone.
     </line>
 
-    <!-- Rating-Kategorie (optional: positiv / neutral / kritisch) -->
+    <!-- Sterneanzahl (falls gesetzt) -->
+    <line condition="isset:ratingStars">
+        Die Bewertung hat insgesamt {{ ratingStars }} von 5 Sternen.
+        Richte Tonfall und Umfang der Antwort daran aus.
+    </line>
+
+    <!-- Rating-Kategorie (positiv / neutral / kritisch) -->
     <line condition="if:ratingCategory=positiv">
         Die Bewertung ist überwiegend positiv.
-        Bedanke dich deutlich für die Rückmeldung, greife ein bis zwei konkrete positive Punkte aus der Bewertung auf
+        Bedanke dich deutlich für die Rückmeldung,
+        greife ein bis zwei konkrete positive Punkte aus der Bewertung auf
         und betone Wertschätzung und Motivation für das Team.
         Die Antwort soll kurz bis mittel lang sein (circa drei bis fünf Sätze).
     </line>
 
     <line condition="if:ratingCategory=neutral">
         Die Bewertung ist gemischt.
-        Bedanke dich für die Rückmeldung, gehe kurz auf positive und kritische Punkte ein
+        Bedanke dich für die Rückmeldung,
+        gehe kurz auf positive und kritische Punkte ein
         und zeige, dass ihr das Feedback nutzt, um euch weiter zu verbessern.
         Bleibe sachlich, freundlich und konstruktiv.
     </line>
@@ -86,18 +95,6 @@
         Verweise lieber auf ein vertrauliches, persönliches Gespräch, um den Sachverhalt im Detail zu klären.
     </line>
 
-    <line condition="if:reviewTag=Allgemeines Feedback, Therapie/Behandlung">
-        Die Bewertung enthält allgemeines Feedback und Hinweise zur Therapie.
-        Bedanke dich für die Gesamtzufriedenheit und gehe zusätzlich kurz auf die therapeutische Behandlung ein.
-    </line>
-
-    <!-- Spezialfall: Löschantrag (optional, wenn du das intern nutzt) -->
-    <line condition="if:reviewTag=Endgültig Gelöscht, Löschantrag">
-        Erzeuge in diesem Fall keine öffentliche Antwort.
-        Gib ausschließlich das Wort KEINE_ANTWORT aus, damit das Backend erkennen kann,
-        dass hier kein Kommentar veröffentlicht werden soll.
-    </line>
-
     <!-- Anrede & Signatur -->
     <line condition="isset:anrede">
         Beginne deine Antwort mit der folgenden Anrede und setze danach einen Zeilenumbruch:
@@ -126,7 +123,7 @@
         Verwende gern Formulierungen wie
         „Vielen Dank für Ihre Rückmeldung“, „Es freut uns sehr, dass …“ bei positiven Bewertungen
         oder „Es tut uns leid, dass …“ bei kritischen Bewertungen,
-        aber wiederhole nicht denselben Satzwortlaut mehrfach.
+        aber wiederhole nicht denselben Satz wortgleich mehrfach.
     </line>
 
     <line>
