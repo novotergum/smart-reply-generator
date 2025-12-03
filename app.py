@@ -1,109 +1,140 @@
-from flask import Flask, request, render_template
-from generate_prompt import build_prompt
 import os
-from dotenv import load_dotenv
+from flask import Flask, render_template, request
 from openai import OpenAI
-
-load_dotenv()
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from generate_prompt import build_prompt
 
 app = Flask(__name__)
 
+# OpenAI Client – API-Key kommt aus der Umgebung / .env
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+MAX_REVIEWS = 10
+
+
+def derive_rating_category(stars: str) -> str:
+    """Leitet aus der Sternanzahl eine Kategorie ab: positiv / neutral / kritisch."""
+    try:
+        v = int(stars)
+    except (TypeError, ValueError):
+        return ""
+    if v >= 4:
+        return "positiv"
+    if v == 3:
+        return "neutral"
+    return "kritisch"
+
+
+def map_review_tag(review_type: str) -> str:
+    """
+    Mapping der Auswahl im Formular auf die in prompt.xml verwendeten Tags.
+    """
+    mapping = {
+        "therapy": "Therapie/Behandlung",
+        "service": "Service/Erreichbarkeit",
+        "staff": "Allgemeines Feedback",
+        "organisation": "Allgemeines Feedback",
+        "critical": "Kritische Inhalte",
+        "other": "Allgemeines Feedback",
+    }
+    return mapping.get((review_type or "").strip(), "Allgemeines Feedback")
+
 
 @app.route("/", methods=["GET"])
-def form():
-    # Defaultwerte für globale Felder
+def index():
+    # Default-Werte für das Formular
     values = {
         "selectedTone": "friendly",
-        "languageMode": "de",
         "corporateSignature": "Ihr NOVOTERGUM Team",
         "contactEmail": "",
+        "languageMode": "de",
     }
-
-    # Mindestens ein leerer Bewertungsblock
-    reviews = [
-        {"review": "", "rating": "", "reviewType": "", "salutation": ""}
-    ]
-
-    return render_template(
-        "index.html",
-        values=values,
-        reviews=reviews,
-        replies=None,
-    )
+    return render_template("index.html", values=values, reviews=[{}], replies=None)
 
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    form_data = request.form
+    form = request.form
 
-    # Globale Einstellungen (gelten für alle Antworten)
+    # Globale Einstellungen (gelten für alle Bewertungen)
     values = {
-        "selectedTone": form_data.get("selectedTone", "friendly"),
-        "languageMode": form_data.get("languageMode", "de"),
-        "corporateSignature": form_data.get("corporateSignature", ""),
-        "contactEmail": form_data.get("contactEmail", ""),
+        "selectedTone": form.get("selectedTone", "friendly"),
+        "corporateSignature": form.get("corporateSignature", "Ihr NOVOTERGUM Team"),
+        "contactEmail": form.get("contactEmail", "").strip(),
+        "languageMode": form.get("languageMode", "de"),
     }
 
-    # Mehrere Bewertungen einsammeln (gleicher Feldname, mehrere Werte)
-    text_list = form_data.getlist("review")
-    rating_list = form_data.getlist("rating")
-    type_list = form_data.getlist("reviewType")
-    salutation_list = form_data.getlist("salutation")
+    # Mehrere Bewertungen einlesen
+    reviews_list = [t.strip() for t in form.getlist("review")]
+    ratings_list = form.getlist("rating")
+    types_list = form.getlist("reviewType")
+    sal_list = form.getlist("salutation")
 
-    reviews = []
-    for idx, text in enumerate(text_list):
-        text = (text or "").strip()
-        if not text:
-            continue
-
-        review_data = {
-            "review": text,
-            "rating": rating_list[idx] if idx < len(rating_list) else "",
-            "reviewType": type_list[idx] if idx < len(type_list) else "",
-            "salutation": salutation_list[idx] if idx < len(salutation_list) else "",
-        }
-        reviews.append(review_data)
+    # Hard-Limit serverseitig
+    reviews_list = reviews_list[:MAX_REVIEWS]
+    ratings_list = ratings_list[:MAX_REVIEWS]
+    types_list = types_list[:MAX_REVIEWS]
+    sal_list = sal_list[:MAX_REVIEWS]
 
     replies = []
+    # Daten für das Re-Rendern des Formulars
+    review_blocks = []
 
-    for review_data in reviews:
-        # Für die Prompt-Erzeugung Review-spezifische Daten + globale Optionen zusammenführen
-        prompt_input = {}
-        prompt_input.update(values)
-        prompt_input.update(review_data)
+    base = {
+        "selectedTone": values["selectedTone"],
+        "languageMode": values["languageMode"],
+        "corporateSignature": values["corporateSignature"],
+        "kontaktMail": values["contactEmail"],
+    }
 
-        prompt = build_prompt(prompt_input)
+    for idx, review_text in enumerate(reviews_list):
+        rating_raw = ratings_list[idx] if idx < len(ratings_list) else ""
+        rtype = types_list[idx] if idx < len(types_list) else ""
+        sal = sal_list[idx] if idx < len(sal_list) else ""
 
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        reply_text = response.choices[0].message.content
-
-        replies.append(
+        # Für das Template
+        review_blocks.append(
             {
-                "review": review_data["review"],
-                "rating": review_data["rating"],
-                "reviewType": review_data["reviewType"],
-                "salutation": review_data["salutation"],
-                "reply": reply_text,
+                "review": review_text,
+                "rating": rating_raw,
+                "reviewType": rtype,
+                "salutation": sal,
             }
         )
 
-    # Wenn alle Textfelder leer waren, trotzdem einen leeren Block anzeigen
-    if not reviews:
-        reviews = [{"review": "", "rating": "", "reviewType": "", "salutation": ""}]
+        # Leere Bewertungen nicht an die API schicken
+        if not review_text:
+            continue
+
+        data = dict(base)
+        data["review"] = review_text
+        data["ratingStars"] = rating_raw
+        data["ratingCategory"] = derive_rating_category(rating_raw)
+        data["reviewTag"] = map_review_tag(rtype)
+        if sal:
+            data["anrede"] = sal
+
+        prompt = build_prompt(data)
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        reply_text = (response.choices[0].message.content or "").strip()
+
+        replies.append({"review": review_text, "reply": reply_text})
+
+    # Falls der Nutzer z.B. weniger als 1 Bewertung hatte, trotzdem mind. einen Block anzeigen
+    if not review_blocks:
+        review_blocks = [{}]
 
     return render_template(
         "index.html",
         values=values,
-        reviews=reviews,
+        reviews=review_blocks,
         replies=replies,
     )
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port)
