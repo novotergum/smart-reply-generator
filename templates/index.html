@@ -65,6 +65,7 @@
       color:var(--muted);
       margin:2px 0 0;
     }
+
     .review-block{
       padding:16px 0 18px;
       border-bottom:1px dashed #e5e7eb;
@@ -72,11 +73,31 @@
     .review-block:last-child{
       border-bottom:none;
     }
+    .review-block-header{
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      margin-bottom:4px;
+      gap:10px;
+    }
     .review-heading{
       font-size:15px;
       font-weight:600;
-      margin:0 0 6px;
+      margin:0;
     }
+    .remove-review-btn{
+      border-radius:999px;
+      border:0;
+      cursor:pointer;
+      font-size:11px;
+      padding:4px 10px;
+      background:#fee2e2;
+      color:#b91c1c;
+    }
+    .remove-review-btn:hover{
+      background:#fecaca;
+    }
+
     .btn-primary,.btn-secondary{
       border-radius:999px;
       border:0;
@@ -151,11 +172,13 @@
   <form method="post" action="/generate">
     <div id="reviews-container">
 
-      {# Mindestens ein Block – kommt aus app.py #}
       {% set _reviews = reviews or [ {} ] %}
       {% for r in _reviews %}
       <div class="review-block">
-        <p class="review-heading">Bewertung {{ loop.index }}</p>
+        <div class="review-block-header">
+          <p class="review-heading">Bewertung {{ loop.index }}</p>
+          <button type="button" class="remove-review-btn">Entfernen</button>
+        </div>
 
         <div class="field">
           <label for="review_{{ loop.index0 }}">Bewertungstext</label>
@@ -269,21 +292,28 @@ document.addEventListener('DOMContentLoaded', function() {
   const addBtn = document.getElementById('add-review-btn');
   if (!container || !addBtn) return;
 
+  function renumberBlocks() {
+    const blocks = container.querySelectorAll('.review-block');
+    blocks.forEach(function(block, index) {
+      const heading = block.querySelector('.review-heading');
+      if (heading) heading.textContent = 'Bewertung ' + (index + 1);
+
+      // IDs und for-Attribute anhand des Index neu setzen
+      block.querySelectorAll('[id]').forEach(function(el) {
+        const base = el.id.replace(/_\d+$/, '');
+        el.id = base + '_' + index;
+      });
+      block.querySelectorAll('label[for]').forEach(function(label) {
+        const base = label.getAttribute('for').replace(/_\d+$/, '');
+        label.setAttribute('for', base + '_' + index);
+      });
+    });
+  }
+
   addBtn.addEventListener('click', function() {
     const blocks = container.querySelectorAll('.review-block');
     const last = blocks[blocks.length - 1];
     const clone = last.cloneNode(true);
-    const newIndex = blocks.length;
-
-    // IDs und Label-for aktualisieren
-    clone.querySelectorAll('[id]').forEach(function(el) {
-      const base = el.id.replace(/_\d+$/, '');
-      el.id = base + '_' + newIndex;
-    });
-    clone.querySelectorAll('label[for]').forEach(function(label) {
-      const base = label.getAttribute('for').replace(/_\d+$/, '');
-      label.setAttribute('for', base + '_' + newIndex);
-    });
 
     // Werte zurücksetzen
     clone.querySelectorAll('textarea').forEach(el => el.value = '');
@@ -291,8 +321,30 @@ document.addEventListener('DOMContentLoaded', function() {
     clone.querySelectorAll('select').forEach(el => el.selectedIndex = 0);
 
     container.appendChild(clone);
+    renumberBlocks();
     clone.scrollIntoView({ behavior: 'smooth', block: 'start' });
   });
+
+  // Entfernen-Button mit Event-Delegation
+  container.addEventListener('click', function(e) {
+    const btn = e.target.closest('.remove-review-btn');
+    if (!btn) return;
+
+    const blocks = container.querySelectorAll('.review-block');
+    if (blocks.length <= 1) {
+      // nie alle Blöcke löschen – mindestens einen behalten
+      return;
+    }
+
+    const block = btn.closest('.review-block');
+    if (block) {
+      block.remove();
+      renumberBlocks();
+    }
+  });
+
+  // initiale Nummerierung sicherstellen
+  renumberBlocks();
 });
 </script>
 </body>
