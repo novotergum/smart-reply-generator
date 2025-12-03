@@ -114,7 +114,6 @@
       box-shadow:0 10px 25px rgba(249,115,22,.45);
     }
     .btn-primary:hover{filter:brightness(1.03);}
-    /* Ausgegrauter Zustand nach Klick */
     .btn-primary[disabled]{
       opacity:.6;
       cursor:not-allowed;
@@ -172,12 +171,11 @@
 <div class="page">
   <h1>Smart Reply Generator für Bewertungen</h1>
   <p class="lead">
-    Füge eine Google- oder Portallbewertung ein und erhalte passende Antwortvorschläge im NOVOTERGUM-Stil.
+    Füge eine oder mehrere Google- bzw. Portalbewertungen ein und erhalte passende Antwortvorschläge im NOVOTERGUM-Stil.
   </p>
 
   <form method="post" action="/generate">
     <div id="reviews-container">
-
       {% set _reviews = reviews or [ {} ] %}
       {% for r in _reviews %}
       <div class="review-block">
@@ -198,7 +196,7 @@
             <option value="">– bitte auswählen –</option>
             {% for n in range(1,6) %}
               <option value="{{ n }}"
-                {% if (r.rating or '') == n|string %}selected{% endif %}>
+                      {% if (r.rating or '') == n|string %}selected{% endif %}>
                 {{ n }} Stern{% if n > 1 %}e{% endif %}
               </option>
             {% endfor %}
@@ -212,8 +210,9 @@
             <option value="">– optional, zur besseren Einordnung –</option>
             <option value="therapy" {% if r.reviewType == 'therapy' %}selected{% endif %}>Therapie / Behandlung</option>
             <option value="service" {% if r.reviewType == 'service' %}selected{% endif %}>Service / Erreichbarkeit</option>
-            <option value="staff" {% if r.reviewType == 'staff' %}selected{% endif %}>Team / Freundlichkeit</option>
+            <option value="staff" {% if r.reviewType == 'staff' %}selected{% endif %}>Team / Freundlichkeit / Atmosphäre</option>
             <option value="organisation" {% if r.reviewType == 'organisation' %}selected{% endif %}>Organisation / Termine</option>
+            <option value="critical" {% if r.reviewType == 'critical' %}selected{% endif %}>Kritische Inhalte / Beschwerde</option>
             <option value="other" {% if r.reviewType == 'other' %}selected{% endif %}>Sonstiges</option>
           </select>
         </div>
@@ -260,7 +259,7 @@
           <input id="contactEmail" name="contactEmail"
                  placeholder="z. B. standort@novotergum.de"
                  value="{{ values.contactEmail or '' }}">
-          <p class="hint">Vor allem für kritische Bewertungen, um einen direkten Kontakt anzubieten.</p>
+          <p class="hint">Wird vor allem bei kritischen Bewertungen genutzt, um einen direkten Kontakt anzubieten.</p>
         </div>
       </div>
     </div>
@@ -279,16 +278,16 @@
     <h2>Antwortvorschläge</h2>
 
     {% for item in replies %}
-      <article class="reply-card">
-        <h3>Bewertung {{ loop.index }}</h3>
-        <p class="original-label">Originalbewertung:</p>
-        <p class="original-review">{{ item.review }}</p>
+    <article class="reply-card">
+      <h3>Bewertung {{ loop.index }}</h3>
+      <p class="original-label">Originalbewertung:</p>
+      <p class="original-review">{{ item.review }}</p>
 
-        <div class="field">
-          <label for="reply_{{ loop.index0 }}">Antwortvorschlag</label>
-          <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
-        </div>
-      </article>
+      <div class="field">
+        <label for="reply_{{ loop.index0 }}">Antwortvorschlag</label>
+        <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
+      </div>
+    </article>
     {% endfor %}
   </section>
   {% endif %}
@@ -300,6 +299,7 @@ document.addEventListener('DOMContentLoaded', function() {
   const addBtn = document.getElementById('add-review-btn');
   const form = document.querySelector('form');
   const submitBtn = document.getElementById('submit-btn');
+  const MAX_REVIEWS = 10;
 
   function renumberBlocks() {
     if (!container) return;
@@ -308,7 +308,6 @@ document.addEventListener('DOMContentLoaded', function() {
       const heading = block.querySelector('.review-heading');
       if (heading) heading.textContent = 'Bewertung ' + (index + 1);
 
-      // IDs & for-Attribute aktualisieren
       block.querySelectorAll('[id]').forEach(function(el) {
         const base = el.id.replace(/_\d+$/, '');
         el.id = base + '_' + index;
@@ -323,10 +322,14 @@ document.addEventListener('DOMContentLoaded', function() {
   if (addBtn && container) {
     addBtn.addEventListener('click', function() {
       const blocks = container.querySelectorAll('.review-block');
+      if (blocks.length >= MAX_REVIEWS) {
+        alert('Du kannst maximal ' + MAX_REVIEWS + ' Bewertungen gleichzeitig bearbeiten.');
+        return;
+      }
+
       const last = blocks[blocks.length - 1];
       const clone = last.cloneNode(true);
 
-      // Werte zurücksetzen
       clone.querySelectorAll('textarea').forEach(el => el.value = '');
       clone.querySelectorAll('input').forEach(el => el.value = '');
       clone.querySelectorAll('select').forEach(el => el.selectedIndex = 0);
@@ -334,10 +337,14 @@ document.addEventListener('DOMContentLoaded', function() {
       container.appendChild(clone);
       renumberBlocks();
       clone.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      if (blocks.length + 1 >= MAX_REVIEWS) {
+        addBtn.disabled = true;
+        addBtn.textContent = 'Max. ' + MAX_REVIEWS + ' Bewertungen erreicht';
+      }
     });
   }
 
-  // Entfernen-Button (Event Delegation)
   if (container) {
     container.addEventListener('click', function(e) {
       const btn = e.target.closest('.remove-review-btn');
@@ -348,15 +355,17 @@ document.addEventListener('DOMContentLoaded', function() {
         // Mindestens einen Block behalten
         return;
       }
-      const block = btn.closest('.review-block');
-      if (block) {
-        block.remove();
-        renumberBlocks();
+
+      btn.closest('.review-block').remove();
+      renumberBlocks();
+
+      if (blocks.length - 1 < MAX_REVIEWS) {
+        addBtn.disabled = false;
+        addBtn.textContent = '+ Weitere Bewertung hinzufügen';
       }
     });
   }
 
-  // Submit-Button beim Absenden deaktivieren
   if (form && submitBtn) {
     form.addEventListener('submit', function() {
       submitBtn.disabled = true;
@@ -364,7 +373,6 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  // initiale Nummerierung
   renumberBlocks();
 });
 </script>
