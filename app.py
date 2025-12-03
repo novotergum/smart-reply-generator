@@ -1,120 +1,109 @@
-import os
-
 from flask import Flask, request, render_template
+from generate_prompt import build_prompt
+import os
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from generate_prompt import build_prompt
-
-# Umgebungsvariablen laden (lokal über .env, auf Railway über Variables)
 load_dotenv()
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-if not OPENAI_API_KEY:
-    raise RuntimeError(
-        "OPENAI_API_KEY ist nicht gesetzt. Bitte als Umgebungsvariable hinterlegen "
-        "(lokal in .env, auf Railway unter Variables)."
-    )
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-# Flask-App initialisieren, Templates liegen im Ordner "templates"
-app = Flask(__name__, template_folder="templates")
-
-
-def derive_rating_category(user_input: dict) -> None:
-    """
-    Leitet aus ratingStars automatisch eine ratingCategory ab,
-    falls noch keine gesetzt ist.
-
-    - 4–5 Sterne -> positiv
-    - 3 Sterne   -> neutral
-    - 1–2 Sterne -> kritisch
-    """
-    if user_input.get("ratingCategory"):
-        # Falls du später manuell ein Label setzt, bleibt das bestehen.
-        return
-
-    stars_str = (user_input.get("ratingStars") or "").strip()
-    if not stars_str.isdigit():
-        return
-
-    stars = int(stars_str)
-    if stars >= 4:
-        user_input["ratingCategory"] = "positiv"
-    elif stars == 3:
-        user_input["ratingCategory"] = "neutral"
-    elif 1 <= stars <= 2:
-        user_input["ratingCategory"] = "kritisch"
-
-
-@app.route("/health", methods=["GET"])
-def health():
-    """
-    Einfache Health-Check-Route für Monitoring.
-    """
-    return "ok", 200
+app = Flask(__name__)
 
 
 @app.route("/", methods=["GET"])
 def form():
-    """
-    Zeigt das Formular für den Smart Reply Generator an.
-    """
-    default_values = {
-        "review": "",
+    # Defaultwerte für globale Felder
+    values = {
         "selectedTone": "friendly",
-        "languageMode": "de",  # standardmäßig Deutsch
+        "languageMode": "de",
         "corporateSignature": "Ihr NOVOTERGUM Team",
-
-        "ratingStars": "",
-        "ratingCategory": "",
-        "reviewTag": "",
-        "anrede": "",
-        "kontaktMail": "",
+        "contactEmail": "",
     }
-    return render_template("index.html", values=default_values, reply=None)
+
+    # Mindestens ein leerer Bewertungsblock
+    reviews = [
+        {"review": "", "rating": "", "reviewType": "", "salutation": ""}
+    ]
+
+    return render_template(
+        "index.html",
+        values=values,
+        reviews=reviews,
+        replies=None,
+    )
 
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    """
-    Nimmt die Formulareingaben entgegen, baut den Prompt und ruft das OpenAI-Modell auf.
-    """
-    user_input = request.form.to_dict()
+    form_data = request.form
 
-    # Sprache hart auf Deutsch setzen, falls nichts kommt
-    user_input.setdefault("languageMode", "de")
+    # Globale Einstellungen (gelten für alle Antworten)
+    values = {
+        "selectedTone": form_data.get("selectedTone", "friendly"),
+        "languageMode": form_data.get("languageMode", "de"),
+        "corporateSignature": form_data.get("corporateSignature", ""),
+        "contactEmail": form_data.get("contactEmail", ""),
+    }
 
-    # Rating-Kategorie aus den Sternen ableiten (falls möglich)
-    derive_rating_category(user_input)
+    # Mehrere Bewertungen einsammeln (gleicher Feldname, mehrere Werte)
+    text_list = form_data.getlist("review")
+    rating_list = form_data.getlist("rating")
+    type_list = form_data.getlist("reviewType")
+    salutation_list = form_data.getlist("salutation")
 
-    prompt = build_prompt(user_input)
+    reviews = []
+    for idx, text in enumerate(text_list):
+        text = (text or "").strip()
+        if not text:
+            continue
 
-    try:
+        review_data = {
+            "review": text,
+            "rating": rating_list[idx] if idx < len(rating_list) else "",
+            "reviewType": type_list[idx] if idx < len(type_list) else "",
+            "salutation": salutation_list[idx] if idx < len(salutation_list) else "",
+        }
+        reviews.append(review_data)
+
+    replies = []
+
+    for review_data in reviews:
+        # Für die Prompt-Erzeugung Review-spezifische Daten + globale Optionen zusammenführen
+        prompt_input = {}
+        prompt_input.update(values)
+        prompt_input.update(review_data)
+
+        prompt = build_prompt(prompt_input)
+
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
         )
 
-        reply = response.choices[0].message.content
-        status_code = 200
-    except Exception as e:
-        reply = (
-            "Es ist ein Fehler bei der Generierung der Antwort aufgetreten: "
-            f"{e}"
-        )
-        status_code = 500
+        reply_text = response.choices[0].message.content
 
-    return render_template("index.html", values=user_input, reply=reply), status_code
+        replies.append(
+            {
+                "review": review_data["review"],
+                "rating": review_data["rating"],
+                "reviewType": review_data["reviewType"],
+                "salutation": review_data["salutation"],
+                "reply": reply_text,
+            }
+        )
+
+    # Wenn alle Textfelder leer waren, trotzdem einen leeren Block anzeigen
+    if not reviews:
+        reviews = [{"review": "", "rating": "", "reviewType": "", "salutation": ""}]
+
+    return render_template(
+        "index.html",
+        values=values,
+        reviews=reviews,
+        replies=replies,
+    )
 
 
 if __name__ == "__main__":
-    # Lokaler Start. Auf Railway übernimmt ein WSGI-Server (z. B. gunicorn).
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(debug=True)
