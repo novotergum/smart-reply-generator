@@ -1,7 +1,7 @@
-# Smart Reply Generator
+# Smart Reply Generator für Bewertungen
 
-Kleines Flask-Tool, das aus Bewertungs-Texten (z. B. Google Reviews) automatisch passende Antwortvorschläge
-mit Hilfe der OpenAI API erzeugt. Oberfläche, Prompt-Logik und Ausgaben sind auf Deutsch optimiert.
+Kleine Flask-App, die aus Bewertungs-Texten (z. B. Google Reviews) automatisch passende Antwortvorschläge
+im NOVOTERGUM-Stil mit Hilfe der OpenAI API erzeugt. Oberfläche und Prompt-Logik sind auf Deutsch optimiert.
 
 ## Projektstruktur
 
