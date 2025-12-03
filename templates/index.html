@@ -114,6 +114,12 @@
       box-shadow:0 10px 25px rgba(249,115,22,.45);
     }
     .btn-primary:hover{filter:brightness(1.03);}
+    /* Ausgegrauter Zustand nach Klick */
+    .btn-primary[disabled]{
+      opacity:.6;
+      cursor:not-allowed;
+      box-shadow:none;
+    }
     .btn-secondary{
       background:#f3f4f6;
       color:var(--ink);
@@ -262,7 +268,9 @@
     <input type="hidden" name="languageMode" value="{{ values.languageMode or 'de' }}">
 
     <div class="actions">
-      <button type="submit" class="btn-primary">Antwortvorschläge erzeugen</button>
+      <button id="submit-btn" type="submit" class="btn-primary">
+        Antwortvorschläge erzeugen
+      </button>
     </div>
   </form>
 
@@ -290,15 +298,17 @@
 document.addEventListener('DOMContentLoaded', function() {
   const container = document.getElementById('reviews-container');
   const addBtn = document.getElementById('add-review-btn');
-  if (!container || !addBtn) return;
+  const form = document.querySelector('form');
+  const submitBtn = document.getElementById('submit-btn');
 
   function renumberBlocks() {
+    if (!container) return;
     const blocks = container.querySelectorAll('.review-block');
     blocks.forEach(function(block, index) {
       const heading = block.querySelector('.review-heading');
       if (heading) heading.textContent = 'Bewertung ' + (index + 1);
 
-      // IDs und for-Attribute anhand des Index neu setzen
+      // IDs & for-Attribute aktualisieren
       block.querySelectorAll('[id]').forEach(function(el) {
         const base = el.id.replace(/_\d+$/, '');
         el.id = base + '_' + index;
@@ -310,40 +320,51 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-  addBtn.addEventListener('click', function() {
-    const blocks = container.querySelectorAll('.review-block');
-    const last = blocks[blocks.length - 1];
-    const clone = last.cloneNode(true);
+  if (addBtn && container) {
+    addBtn.addEventListener('click', function() {
+      const blocks = container.querySelectorAll('.review-block');
+      const last = blocks[blocks.length - 1];
+      const clone = last.cloneNode(true);
 
-    // Werte zurücksetzen
-    clone.querySelectorAll('textarea').forEach(el => el.value = '');
-    clone.querySelectorAll('input').forEach(el => el.value = '');
-    clone.querySelectorAll('select').forEach(el => el.selectedIndex = 0);
+      // Werte zurücksetzen
+      clone.querySelectorAll('textarea').forEach(el => el.value = '');
+      clone.querySelectorAll('input').forEach(el => el.value = '');
+      clone.querySelectorAll('select').forEach(el => el.selectedIndex = 0);
 
-    container.appendChild(clone);
-    renumberBlocks();
-    clone.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  });
-
-  // Entfernen-Button mit Event-Delegation
-  container.addEventListener('click', function(e) {
-    const btn = e.target.closest('.remove-review-btn');
-    if (!btn) return;
-
-    const blocks = container.querySelectorAll('.review-block');
-    if (blocks.length <= 1) {
-      // nie alle Blöcke löschen – mindestens einen behalten
-      return;
-    }
-
-    const block = btn.closest('.review-block');
-    if (block) {
-      block.remove();
+      container.appendChild(clone);
       renumberBlocks();
-    }
-  });
+      clone.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
 
-  // initiale Nummerierung sicherstellen
+  // Entfernen-Button (Event Delegation)
+  if (container) {
+    container.addEventListener('click', function(e) {
+      const btn = e.target.closest('.remove-review-btn');
+      if (!btn) return;
+
+      const blocks = container.querySelectorAll('.review-block');
+      if (blocks.length <= 1) {
+        // Mindestens einen Block behalten
+        return;
+      }
+      const block = btn.closest('.review-block');
+      if (block) {
+        block.remove();
+        renumberBlocks();
+      }
+    });
+  }
+
+  // Submit-Button beim Absenden deaktivieren
+  if (form && submitBtn) {
+    form.addEventListener('submit', function() {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Antwortvorschläge werden erzeugt …';
+    });
+  }
+
+  // initiale Nummerierung
   renumberBlocks();
 });
 </script>
