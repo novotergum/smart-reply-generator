@@ -376,5 +376,198 @@ document.addEventListener('DOMContentLoaded', function() {
   renumberBlocks();
 });
 </script>
+  <script>
+document.addEventListener('DOMContentLoaded', function () {
+  const container  = document.getElementById('reviews-container');
+  const addBtn     = document.getElementById('add-review-btn');
+  const form       = document.querySelector('form');
+  const submitBtn  = document.getElementById('submit-btn');
+
+  const MAX_REVIEWS  = 10;   // max. 10 Bewertungen gleichzeitig im Formular
+  const DAILY_LIMIT  = 50;   // max. 50 Bewertungen pro Tag (pro Browser/Device)
+  const USAGE_KEY    = 'smartReplyDailyUsage_v1';
+
+  // ---------- localStorage Helpers ----------
+
+  function todayISO() {
+    // Nur Datum (YYYY-MM-DD)
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function loadUsage() {
+    const today = todayISO();
+    try {
+      const raw = localStorage.getItem(USAGE_KEY);
+      if (!raw) {
+        return { date: today, count: 0 };
+      }
+      const obj = JSON.parse(raw);
+      if (!obj || obj.date !== today) {
+        // Neuer Tag -> Zähler zurücksetzen
+        return { date: today, count: 0 };
+      }
+      if (typeof obj.count !== 'number' || obj.count < 0) {
+        return { date: today, count: 0 };
+      }
+      return obj;
+    } catch (e) {
+      // Falls localStorage nicht verfügbar ist, soft-fail
+      return { date: today, count: 0 };
+    }
+  }
+
+  function saveUsage(usage) {
+    try {
+      localStorage.setItem(USAGE_KEY, JSON.stringify(usage));
+    } catch (e) {
+      // Wenn nicht speicherbar, können wir das Limit nicht durchsetzen – fail soft
+    }
+  }
+
+  function updateDailyLimitUI(usage) {
+    if (!submitBtn) return;
+    const remaining = Math.max(0, DAILY_LIMIT - usage.count);
+
+    if (remaining <= 0) {
+      submitBtn.disabled   = true;
+      submitBtn.textContent = 'Tageslimit erreicht';
+    } else {
+      submitBtn.disabled   = false;
+      submitBtn.textContent = 'Antwortvorschläge erzeugen (' + remaining + ' übrig)';
+    }
+  }
+
+  // Initialen Usage-Status holen und UI setzen
+  let usage = loadUsage();
+  updateDailyLimitUI(usage);
+
+  // ---------- Review-Blöcke neu nummerieren ----------
+
+  function renumberBlocks() {
+    if (!container) return;
+    const blocks = container.querySelectorAll('.review-block');
+    blocks.forEach(function (block, index) {
+      const heading = block.querySelector('.review-heading');
+      if (heading) heading.textContent = 'Bewertung ' + (index + 1);
+
+      // IDs der Felder eindeutiger machen
+      block.querySelectorAll('[id]').forEach(function (el) {
+        const base = el.id.replace(/_\d+$/, '');
+        el.id = base + '_' + index;
+      });
+      block.querySelectorAll('label[for]').forEach(function (label) {
+        const base = label.getAttribute('for').replace(/_\d+$/, '');
+        label.setAttribute('for', base + '_' + index);
+      });
+    });
+  }
+
+  // ---------- Weitere Bewertung hinzufügen (max. 10) ----------
+
+  if (addBtn && container) {
+    addBtn.addEventListener('click', function () {
+      const blocks = container.querySelectorAll('.review-block');
+      if (blocks.length >= MAX_REVIEWS) {
+        alert('Du kannst maximal ' + MAX_REVIEWS + ' Bewertungen gleichzeitig bearbeiten.');
+        return;
+      }
+
+      const last  = blocks[blocks.length - 1];
+      const clone = last.cloneNode(true);
+
+      // Inhalte im neuen Block zurücksetzen
+      clone.querySelectorAll('textarea').forEach(el => el.value = '');
+      clone.querySelectorAll('input').forEach(el => el.value = '');
+      clone.querySelectorAll('select').forEach(el => el.selectedIndex = 0);
+
+      container.appendChild(clone);
+      renumberBlocks();
+      clone.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      if (blocks.length + 1 >= MAX_REVIEWS) {
+        addBtn.disabled   = true;
+        addBtn.textContent = 'Max. ' + MAX_REVIEWS + ' Bewertungen erreicht';
+      }
+    });
+  }
+
+  // ---------- Bewertung entfernen ----------
+
+  if (container) {
+    container.addEventListener('click', function (e) {
+      const btn = e.target.closest('.remove-review-btn');
+      if (!btn) return;
+
+      const blocks = container.querySelectorAll('.review-block');
+      if (blocks.length <= 1) {
+        // Mindestens einen Block behalten
+        return;
+      }
+
+      btn.closest('.review-block').remove();
+      renumberBlocks();
+
+      if (blocks.length - 1 < MAX_REVIEWS) {
+        addBtn.disabled   = false;
+        addBtn.textContent = '+ Weitere Bewertung hinzufügen';
+      }
+    });
+  }
+
+  // ---------- Formular-Submit: Tageslimit prüfen + Zähler erhöhen ----------
+
+  if (form && submitBtn) {
+    form.addEventListener('submit', function (e) {
+      // Aktuellen Stand neu laden (falls anderer Tab geändert hat)
+      usage = loadUsage();
+
+      // Wie viele Bewertungen mit Text werden wirklich gesendet?
+      let creditsThisSubmit = 0;
+      if (container) {
+        const blocks = container.querySelectorAll('.review-block');
+        blocks.forEach(function (block) {
+          const textarea = block.querySelector('textarea[name="review"]');
+          if (textarea && textarea.value.trim().length > 0) {
+            creditsThisSubmit += 1;
+          }
+        });
+      }
+
+      if (creditsThisSubmit === 0) {
+        // Keine Texte => keine Credits, normale Validierung übernimmt Browser/Backend
+        return;
+      }
+
+      const newCount = usage.count + creditsThisSubmit;
+
+      if (newCount > DAILY_LIMIT) {
+        e.preventDefault();
+        const remaining = Math.max(0, DAILY_LIMIT - usage.count);
+        alert(
+          'Tageslimit erreicht.\n\n' +
+          'Erlaubt: ' + DAILY_LIMIT + ' Bewertungen pro Tag.\n' +
+          'Bisher genutzt: ' + usage.count + '.\n' +
+          'Dieser Vorgang würde weitere ' + creditsThisSubmit +
+          ' Bewertungen verbrauchen, es sind aber nur noch ' + remaining + ' übrig.'
+        );
+        return;
+      }
+
+      // Limit wird eingehalten -> Zähler erhöhen und speichern
+      usage.count = newCount;
+      usage.date  = todayISO();
+      saveUsage(usage);
+
+      // Button für diese Anfrage deaktivieren, um Doppelklick zu verhindern
+      submitBtn.disabled   = true;
+      submitBtn.textContent = 'Antwortvorschläge werden erzeugt …';
+    });
+  }
+
+  // Initial einmal korrekt nummerieren
+  renumberBlocks();
+});
+</script>
+
 </body>
 </html>
