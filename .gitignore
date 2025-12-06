@@ -1,21 +1,7 @@
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-
-# Virtual Environments
+.env
 .venv/
 venv/
-env/
-
-# Env-Dateien
-.env
-
-# Editor
-.vscode/
-.idea/
-
-# OS
-.DS_Store
-Thumbs.db
+__pycache__/
+*.pyc
+instance/
+.pytest_cache/
