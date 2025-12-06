@@ -1,4 +1,7 @@
 import os
+from datetime import datetime, timezone
+
+import requests
 from flask import Flask, render_template, request
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -13,6 +16,9 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # Serverseitiges Hard-Limit: maximal 10 Bewertungen pro Request
 MAX_REVIEWS = 10
+
+# Make-Webhook-URL (in Railway als Variable MAKE_WEBHOOK_URL setzen)
+MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "").strip()
 
 
 @app.route("/", methods=["GET"])
@@ -106,6 +112,22 @@ def generate():
                 "insights": insights,  # interne Analyse
             }
         )
+
+        # --- Insights an Make senden (wenn konfiguriert und vorhanden) ---
+        if insights and MAKE_WEBHOOK_URL:
+            try:
+                payload = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "review_text": review_text,
+                    "rating_input": rating_raw,
+                    "tone": values["selectedTone"],
+                    "language": values["languageMode"],
+                    "insights": insights,
+                }
+                # Fire-and-forget – Fehler sollen die UI nicht blockieren
+                requests.post(MAKE_WEBHOOK_URL, json=payload, timeout=3)
+            except Exception as e:
+                app.logger.warning("Make webhook failed: %s", e)
 
     # Falls gar keine Bewertung im POST war, trotzdem einen leeren Block anzeigen
     if not review_blocks:
