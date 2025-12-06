@@ -2,3 +2,4 @@ flask>=3.0.0,<4
 gunicorn>=21.2.0,<22
 openai>=1.40.0,<2
 python-dotenv>=1.0.1,<2
+requests>=2.31.0,<3
