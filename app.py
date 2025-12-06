@@ -1,10 +1,12 @@
 import os
+import json
 from datetime import datetime, timezone
+from urllib import request as urlrequest
 
-import requests
 from flask import Flask, render_template, request
 from openai import OpenAI
 from dotenv import load_dotenv
+
 from generate_prompt import build_prompt, split_public_and_insights
 
 load_dotenv()
@@ -124,8 +126,17 @@ def generate():
                     "language": values["languageMode"],
                     "insights": insights,
                 }
-                # Fire-and-forget – Fehler sollen die UI nicht blockieren
-                requests.post(MAKE_WEBHOOK_URL, json=payload, timeout=3)
+
+                data_bytes = json.dumps(payload).encode("utf-8")
+                req = urlrequest.Request(
+                    MAKE_WEBHOOK_URL,
+                    data=data_bytes,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                # Fire-and-forget – Response wird nicht weiterverarbeitet
+                urlrequest.urlopen(req, timeout=3)
+
             except Exception as e:
                 app.logger.warning("Make webhook failed: %s", e)
 
