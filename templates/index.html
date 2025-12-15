@@ -192,6 +192,9 @@
   </p>
 
   <form method="post" action="/generate">
+    <!-- wichtig: rid vom Prefill-Link wird beim Submit mitgeschickt -->
+    <input type="hidden" name="rid" value="{{ rid or '' }}">
+
     <div id="reviews-container">
       {% set _reviews = reviews or [ {} ] %}
       {% for r in _reviews %}
@@ -324,30 +327,22 @@ document.addEventListener('DOMContentLoaded', function () {
   const form       = document.querySelector('form');
   const submitBtn  = document.getElementById('submit-btn');
 
-  const MAX_REVIEWS  = 10;   // max. 10 Bewertungen gleichzeitig im Formular
-  const DAILY_LIMIT  = 50;   // max. 50 Bewertungen pro Tag (pro Browser/Device)
+  const MAX_REVIEWS  = 10;
+  const DAILY_LIMIT  = 50;
   const USAGE_KEY    = 'smartReplyDailyUsage_v1';
 
-  // ---------- localStorage Helpers ----------
-
   function todayISO() {
-    return new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    return new Date().toISOString().slice(0, 10);
   }
 
   function loadUsage() {
     const today = todayISO();
     try {
       const raw = localStorage.getItem(USAGE_KEY);
-      if (!raw) {
-        return { date: today, count: 0 };
-      }
+      if (!raw) return { date: today, count: 0 };
       const obj = JSON.parse(raw);
-      if (!obj || obj.date !== today) {
-        return { date: today, count: 0 };
-      }
-      if (typeof obj.count !== 'number' || obj.count < 0) {
-        return { date: today, count: 0 };
-      }
+      if (!obj || obj.date !== today) return { date: today, count: 0 };
+      if (typeof obj.count !== 'number' || obj.count < 0) return { date: today, count: 0 };
       return obj;
     } catch (e) {
       return { date: today, count: 0 };
@@ -355,11 +350,7 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   function saveUsage(usage) {
-    try {
-      localStorage.setItem(USAGE_KEY, JSON.stringify(usage));
-    } catch (e) {
-      // Fail soft
-    }
+    try { localStorage.setItem(USAGE_KEY, JSON.stringify(usage)); } catch (e) {}
   }
 
   function updateDailyLimitUI(usage) {
@@ -367,18 +358,16 @@ document.addEventListener('DOMContentLoaded', function () {
     const remaining = Math.max(0, DAILY_LIMIT - usage.count);
 
     if (remaining <= 0) {
-      submitBtn.disabled   = true;
+      submitBtn.disabled = true;
       submitBtn.textContent = 'Tageslimit erreicht';
     } else {
-      submitBtn.disabled   = false;
+      submitBtn.disabled = false;
       submitBtn.textContent = 'Antwortvorschläge erzeugen (' + remaining + ' übrig)';
     }
   }
 
   let usage = loadUsage();
   updateDailyLimitUI(usage);
-
-  // ---------- Review-Blöcke neu nummerieren ----------
 
   function renumberBlocks() {
     if (!container) return;
@@ -397,8 +386,6 @@ document.addEventListener('DOMContentLoaded', function () {
       });
     });
   }
-
-  // ---------- Weitere Bewertung hinzufügen ----------
 
   if (addBtn && container) {
     addBtn.addEventListener('click', function () {
@@ -420,13 +407,11 @@ document.addEventListener('DOMContentLoaded', function () {
       clone.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
       if (blocks.length + 1 >= MAX_REVIEWS) {
-        addBtn.disabled   = true;
+        addBtn.disabled = true;
         addBtn.textContent = 'Max. ' + MAX_REVIEWS + ' Bewertungen erreicht';
       }
     });
   }
-
-  // ---------- Bewertung entfernen ----------
 
   if (container) {
     container.addEventListener('click', function (e) {
@@ -434,21 +419,17 @@ document.addEventListener('DOMContentLoaded', function () {
       if (!btn) return;
 
       const blocks = container.querySelectorAll('.review-block');
-      if (blocks.length <= 1) {
-        return; // Mindestens einen Block behalten
-      }
+      if (blocks.length <= 1) return;
 
       btn.closest('.review-block').remove();
       renumberBlocks();
 
       if (blocks.length - 1 < MAX_REVIEWS) {
-        addBtn.disabled   = false;
+        addBtn.disabled = false;
         addBtn.textContent = '+ Weitere Bewertung hinzufügen';
       }
     });
   }
-
-  // ---------- Submit: Tageslimit prüfen + Zähler erhöhen ----------
 
   if (form && submitBtn) {
     form.addEventListener('submit', function (e) {
@@ -465,9 +446,7 @@ document.addEventListener('DOMContentLoaded', function () {
         });
       }
 
-      if (creditsThisSubmit === 0) {
-        return;
-      }
+      if (creditsThisSubmit === 0) return;
 
       const newCount = usage.count + creditsThisSubmit;
 
@@ -488,7 +467,7 @@ document.addEventListener('DOMContentLoaded', function () {
       usage.date  = todayISO();
       saveUsage(usage);
 
-      submitBtn.disabled   = true;
+      submitBtn.disabled = true;
       submitBtn.textContent = 'Antwortvorschläge werden erzeugt …';
     });
   }
