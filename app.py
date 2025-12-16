@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from urllib import request as urlrequest
 
 import psycopg2
+from psycopg2.extras import Json
+
 from flask import Flask, render_template, request, jsonify, abort
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -15,8 +17,10 @@ from generate_prompt import build_prompt, split_public_and_insights
 load_dotenv()
 app = Flask(__name__)
 
+# OpenAI
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
+# Limits / config
 MAX_REVIEWS = 10
 MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "").strip()
 
@@ -24,30 +28,59 @@ PREFILL_SECRET = os.getenv("PREFILL_SECRET", "").strip()
 PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))  # 3 Tage
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
+# Optional: falls du CORS explizit brauchst (z.B. Ticket-Domain)
+# Beispiel: PREFILL_CORS_ORIGINS=https://ticket.novotergum.de,https://smart-reply-generator-production2.up.railway.app
+PREFILL_CORS_ORIGINS = [
+    o.strip() for o in os.getenv("PREFILL_CORS_ORIGINS", "").split(",") if o.strip()
+]
+
+# DB connect timeout (wichtig gegen Gunicorn worker timeout)
+PG_CONNECT_TIMEOUT = int(os.getenv("PGCONNECT_TIMEOUT", "3"))
+PG_SSLMODE = os.getenv("PGSSLMODE", "prefer")
+
 
 def pg_connect():
     if not DATABASE_URL:
-        raise RuntimeError("DATABASE_URL missing (add Railway Postgres)")
-    # sslmode=prefer ist auf Railway i.d.R. ok
-    return psycopg2.connect(DATABASE_URL, sslmode=os.getenv("PGSSLMODE", "prefer"))
+        raise RuntimeError("DATABASE_URL missing (Railway Postgres variable reference required)")
+    return psycopg2.connect(
+        DATABASE_URL,
+        sslmode=PG_SSLMODE,
+        connect_timeout=PG_CONNECT_TIMEOUT,
+    )
+
+
+_prefill_table_ready = False
 
 
 def prefill_init():
-    with pg_connect() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                CREATE TABLE IF NOT EXISTS prefill (
-                  rid TEXT PRIMARY KEY,
-                  payload JSONB NOT NULL,
-                  created_at BIGINT NOT NULL
+    """Create table if not exists. Must never block long."""
+    global _prefill_table_ready
+    if _prefill_table_ready:
+        return True
+
+    try:
+        with pg_connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prefill (
+                      rid TEXT PRIMARY KEY,
+                      payload JSONB NOT NULL,
+                      created_at BIGINT NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-        conn.commit()
+            conn.commit()
+        _prefill_table_ready = True
+        return True
+    except Exception as e:
+        app.logger.error("Prefill init failed: %s", e)
+        return False
 
 
 def prefill_cleanup():
+    if not prefill_init():
+        return
     cutoff = int(time.time()) - PREFILL_TTL_SECONDS
     with pg_connect() as conn:
         with conn.cursor() as cur:
@@ -56,14 +89,19 @@ def prefill_cleanup():
 
 
 def prefill_insert(payload: dict) -> str:
+    if not prefill_init():
+        raise RuntimeError("DB not ready")
     rid = secrets.token_urlsafe(18)
     now = int(time.time())
+
+    # Cleanup should never make the request hang forever -> connect_timeout guards it
     prefill_cleanup()
+
     with pg_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO prefill (rid, payload, created_at) VALUES (%s, %s, %s)",
-                (rid, json.dumps(payload, ensure_ascii=False), now),
+                (rid, Json(payload), now),
             )
         conn.commit()
     return rid
@@ -72,7 +110,11 @@ def prefill_insert(payload: dict) -> str:
 def prefill_get(rid: str):
     if not rid:
         return None
+    if not prefill_init():
+        return None
+
     prefill_cleanup()
+
     with pg_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT payload FROM prefill WHERE rid = %s", (rid,))
@@ -85,10 +127,38 @@ def prefill_get(rid: str):
 def prefill_delete(rid: str):
     if not rid:
         return
+    if not prefill_init():
+        return
     with pg_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM prefill WHERE rid = %s", (rid,))
         conn.commit()
+
+
+def _cors_maybe(resp):
+    """Only add CORS when explicitly configured."""
+    origin = request.headers.get("Origin")
+    if origin and PREFILL_CORS_ORIGINS and origin in PREFILL_CORS_ORIGINS:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+        resp.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Prefill-Secret"
+    return resp
+
+
+@app.after_request
+def after_request(resp):
+    # Only relevant for /api/prefill (optional)
+    if request.path.startswith("/api/prefill"):
+        return _cors_maybe(resp)
+    return resp
+
+
+@app.route("/api/prefill", methods=["OPTIONS"])
+def api_prefill_options():
+    resp = jsonify({"ok": True})
+    resp.status_code = 204
+    return resp
 
 
 @app.post("/api/prefill")
@@ -98,24 +168,46 @@ def api_prefill_create():
     if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
         abort(401)
 
-    data = request.get_json(silent=True) or {}
+    # Support JSON and form payloads (Zapier kann beides)
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        data = request.form.to_dict(flat=True)
+
     review = (data.get("review") or "").strip()
-    rating = (data.get("rating") or "").strip()
+    rating = (str(data.get("rating") or "")).strip()
+
+    reviewer = (data.get("reviewer") or "").strip()
+    reviewed_at = (data.get("reviewed_at") or "").strip()
 
     if not review or len(review) > 8000:
         return jsonify({"error": "invalid review"}), 400
 
+    # rating: allow empty; accept 1..5; if upstream sometimes sends 0 -> treat as empty
     if rating:
         try:
-            r = int(rating)
-            if r < 1 or r > 5:
+            r = int(float(rating))  # tolerates "5.0" etc.
+            if r == 0:
+                rating = ""
+            elif r < 1 or r > 5:
                 return jsonify({"error": "invalid rating"}), 400
-            rating = str(r)
+            else:
+                rating = str(r)
         except Exception:
             return jsonify({"error": "invalid rating"}), 400
 
-    payload = {"review": review, "rating": rating}
-    rid = prefill_insert(payload)
+    payload = {
+        "review": review,
+        "rating": rating,
+        "reviewer": reviewer,
+        "reviewed_at": reviewed_at,
+    }
+
+    try:
+        rid = prefill_insert(payload)
+    except Exception as e:
+        app.logger.error("Prefill insert failed: %s", e)
+        # Wichtig: schnell fehlschlagen statt hängen -> vermeidet Gunicorn timeouts
+        return jsonify({"error": "db unavailable"}), 503
 
     resp = jsonify({"rid": rid})
     resp.headers["Cache-Control"] = "no-store"
@@ -132,14 +224,32 @@ def index():
         "contactEmail": "",
         "languageMode": "de",
     }
+
     reviews = [{}]
 
     if rid:
-        payload = prefill_get(rid)
+        try:
+            payload = prefill_get(rid)
+        except Exception as e:
+            app.logger.warning("Prefill get failed: %s", e)
+            payload = None
+
         if payload:
+            # Reviewer/Datetime in das Kommentarfeld "review" schreiben (wie dein Beispiel)
+            review_text = (payload.get("review") or "").strip()
+
+            reviewer = (payload.get("reviewer") or "").strip()
+            reviewed_at = (payload.get("reviewed_at") or "").strip()
+
+            if reviewer or reviewed_at:
+                tail = "— " + (reviewer or "Unbekannt")
+                if reviewed_at:
+                    tail += f", am {reviewed_at}"
+                review_text = f"{review_text}\n\n{tail}"
+
             reviews = [{
-                "review": payload.get("review") or "",
-                "rating": payload.get("rating") or "",
+                "review": review_text,
+                "rating": (payload.get("rating") or ""),
                 "reviewType": "",
                 "salutation": "",
             }]
@@ -151,9 +261,11 @@ def index():
 def generate():
     form = request.form
     rid = (form.get("rid") or "").strip()
+
+    # Token nach Nutzung verbrauchen
     if rid:
         try:
-            prefill_delete(rid)  # Token nach Nutzung verbrauchen
+            prefill_delete(rid)
         except Exception as e:
             app.logger.warning("Prefill delete failed: %s", e)
 
@@ -189,9 +301,12 @@ def generate():
         rtype = types_list[idx] if idx < len(types_list) else ""
         sal = sal_list[idx] if idx < len(sal_list) else ""
 
-        review_blocks.append(
-            {"review": review_text, "rating": rating_raw, "reviewType": rtype, "salutation": sal}
-        )
+        review_blocks.append({
+            "review": review_text,
+            "rating": rating_raw,
+            "reviewType": rtype,
+            "salutation": sal,
+        })
 
         if not review_text:
             continue
@@ -208,11 +323,17 @@ def generate():
             model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],
         )
+
         raw_reply = (response.choices[0].message.content or "").strip()
         public_answer, insights = split_public_and_insights(raw_reply)
 
-        replies.append({"review": review_text, "reply": public_answer, "insights": insights})
+        replies.append({
+            "review": review_text,
+            "reply": public_answer,
+            "insights": insights,
+        })
 
+        # Insights an Make senden (optional)
         if insights and MAKE_WEBHOOK_URL:
             try:
                 payload = {
@@ -223,7 +344,7 @@ def generate():
                     "language": values["languageMode"],
                     "insights": insights,
                 }
-                data_bytes = json.dumps(payload).encode("utf-8")
+                data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 req = urlrequest.Request(
                     MAKE_WEBHOOK_URL,
                     data=data_bytes,
@@ -237,16 +358,12 @@ def generate():
     if not review_blocks:
         review_blocks = [{}]
 
+    # rid nach Submit leeren (damit nicht weiterverwendet wird)
     return render_template("index.html", values=values, reviews=review_blocks, replies=replies, rid="")
 
 
-# Tabelle beim Start sicherstellen
-if DATABASE_URL:
-    try:
-        prefill_init()
-    except Exception as e:
-        app.logger.error("Prefill init failed: %s", e)
-
+# Init nicht hart failen lassen; nur versuchen
+prefill_init()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", "8080"))
