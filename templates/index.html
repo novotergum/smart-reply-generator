@@ -26,26 +26,11 @@
       border-radius:var(--radius);
       box-shadow:var(--shadow);
     }
-    h1{
-      font-size:22px;
-      margin:0 0 4px;
-    }
-    .lead{
-      margin:0 0 20px;
-      font-size:14px;
-      color:var(--muted);
-    }
+    h1{font-size:22px;margin:0 0 4px;}
+    .lead{margin:0 0 20px;font-size:14px;color:var(--muted);}
     form{margin:0;}
-    .field{
-      display:flex;
-      flex-direction:column;
-      gap:6px;
-      margin-bottom:12px;
-    }
-    label{
-      font-size:13px;
-      color:var(--muted);
-    }
+    .field{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
+    label{font-size:13px;color:var(--muted);}
     textarea,input,select{
       font:inherit;
       padding:10px 12px;
@@ -60,53 +45,22 @@
       border-color:#fb923c;
       background:#ffffff;
     }
-    .hint{
-      font-size:11px;
-      color:var(--muted);
-      margin:2px 0 0;
-    }
+    .hint{font-size:11px;color:var(--muted);margin:2px 0 0;}
 
-    .review-block{
-      padding:16px 0 18px;
-      border-bottom:1px dashed #e5e7eb;
-    }
-    .review-block:last-child{
-      border-bottom:none;
-    }
-    .review-block-header{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      margin-bottom:4px;
-      gap:10px;
-    }
-    .review-heading{
-      font-size:15px;
-      font-weight:600;
-      margin:0;
-    }
+    .review-block{padding:16px 0 18px;border-bottom:1px dashed #e5e7eb;}
+    .review-block:last-child{border-bottom:none;}
+    .review-block-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:10px;}
+    .review-heading{font-size:15px;font-weight:600;margin:0;}
     .remove-review-btn{
-      border-radius:999px;
-      border:0;
-      cursor:pointer;
-      font-size:11px;
-      padding:4px 10px;
-      background:#fee2e2;
-      color:#b91c1c;
+      border-radius:999px;border:0;cursor:pointer;
+      font-size:11px;padding:4px 10px;background:#fee2e2;color:#b91c1c;
     }
-    .remove-review-btn:hover{
-      background:#fecaca;
-    }
+    .remove-review-btn:hover{background:#fecaca;}
 
     .btn-primary,.btn-secondary{
-      border-radius:999px;
-      border:0;
-      cursor:pointer;
-      font-size:14px;
-      padding:10px 18px;
-      display:inline-flex;
-      align-items:center;
-      gap:6px;
+      border-radius:999px;border:0;cursor:pointer;
+      font-size:14px;padding:10px 18px;
+      display:inline-flex;align-items:center;gap:6px;
     }
     .btn-primary{
       background:linear-gradient(180deg,var(--brand),var(--brand-700));
@@ -114,22 +68,11 @@
       box-shadow:0 10px 25px rgba(249,115,22,.45);
     }
     .btn-primary:hover{filter:brightness(1.03);}
-    .btn-primary[disabled]{
-      opacity:.6;
-      cursor:not-allowed;
-      box-shadow:none;
-    }
-    .btn-secondary{
-      background:#f3f4f6;
-      color:var(--ink);
-      border:1px solid #e5e7eb;
-    }
-    .btn-secondary:hover{
-      background:#e5e7f3;
-    }
-    .actions{
-      margin-top:16px;
-    }
+    .btn-primary[disabled]{opacity:.6;cursor:not-allowed;box-shadow:none;}
+    .btn-secondary{background:#f3f4f6;color:var(--ink);border:1px solid #e5e7eb;}
+    .btn-secondary:hover{background:#e5e7f3;}
+
+    .actions{margin-top:16px;}
     .grid{
       display:grid;
       grid-template-columns:1fr;
@@ -151,28 +94,11 @@
       background:#f9fafb;
       border:1px solid #e5e7eb;
     }
-    .reply-card h3{
-      margin:0 0 6px;
-      font-size:14px;
-    }
-    .original-label{
-      margin:4px 0 0;
-      font-size:12px;
-      color:var(--muted);
-    }
-    .original-review{
-      margin:4px 0 8px;
-      font-size:13px;
-      white-space:pre-wrap;
-    }
-    details{
-      margin-top:8px;
-      font-size:12px;
-    }
-    details summary{
-      cursor:pointer;
-      color:var(--muted);
-    }
+    .reply-card h3{margin:0 0 6px;font-size:14px;}
+    .original-label{margin:4px 0 0;font-size:12px;color:var(--muted);}
+    .original-review{margin:4px 0 8px;font-size:13px;white-space:pre-wrap;}
+    details{margin-top:8px;font-size:12px;}
+    details summary{cursor:pointer;color:var(--muted);}
     details pre{
       margin-top:6px;
       background:#111827;
@@ -180,6 +106,13 @@
       padding:8px 10px;
       border-radius:8px;
       overflow-x:auto;
+    }
+    .publish-row{
+      margin-top:10px;
+      display:flex;
+      gap:10px;
+      align-items:center;
+      flex-wrap:wrap;
     }
   </style>
 </head>
@@ -193,7 +126,7 @@
 
   <form method="post" action="/generate">
     <!-- wichtig: rid vom Prefill-Link wird beim Submit mitgeschickt -->
-    <input type="hidden" name="rid" value="{{ rid or '' }}">
+    <input type="hidden" name="rid" id="rid-hidden" value="{{ rid or '' }}">
 
     <div id="reviews-container">
       {% set _reviews = reviews or [ {} ] %}
@@ -305,7 +238,26 @@
 
       <div class="field">
         <label for="reply_{{ loop.index0 }}">Öffentliche Antwort</label>
-        <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
+
+        {# Wenn Publishing aktiv ist und genau 1 Reply existiert: editierbar lassen, damit man final anpassen kann #}
+        <textarea id="reply_{{ loop.index0 }}" rows="7"
+          {% if not (publish_enabled and publish_ready and rid and (replies|length == 1)) %}readonly{% endif %}
+        >{{ item.reply }}</textarea>
+
+        {% if publish_enabled and publish_ready and rid and (replies|length == 1) and loop.index0 == 0 %}
+          <div class="publish-row">
+            <button type="button" class="btn-secondary" id="publish-btn">
+              Auf Google veröffentlichen
+            </button>
+            <button type="button" class="btn-secondary" id="publish-force-btn" style="display:none;">
+              Überschreiben &amp; veröffentlichen
+            </button>
+            <span class="hint" id="publish-status" style="margin:0;"></span>
+          </div>
+          <p class="hint" style="margin-top:8px;">
+            Hinweis: Veröffentlicht die Antwort direkt im Google Business Profile. Bitte vorher prüfen.
+          </p>
+        {% endif %}
       </div>
 
       {% if item.insights %}
@@ -431,6 +383,7 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
+  // Submit: Tageslimit zählen + Button ausgrauen (während Request läuft)
   if (form && submitBtn) {
     form.addEventListener('submit', function (e) {
       usage = loadUsage();
@@ -473,8 +426,72 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   renumberBlocks();
+
+  // Publishing (nur wenn Buttons existieren)
+  const publishBtn = document.getElementById('publish-btn');
+  const forceBtn = document.getElementById('publish-force-btn');
+  const statusEl = document.getElementById('publish-status');
+  const replyTa = document.getElementById('reply_0');
+  const ridHidden = document.getElementById('rid-hidden');
+
+  if (publishBtn && statusEl && replyTa && ridHidden) {
+    const rid = (ridHidden.value || '').trim();
+
+    async function publish(force=false) {
+      const replyText = (replyTa.value || '').trim();
+      if (!rid) {
+        statusEl.textContent = 'Fehler: rid fehlt.';
+        return;
+      }
+      if (!replyText) {
+        statusEl.textContent = 'Keine Antwort vorhanden.';
+        return;
+      }
+
+      const ok = confirm(force
+        ? 'Achtung: vorhandene Google-Antwort wird überschrieben. Wirklich veröffentlichen?'
+        : 'Antwort wirklich auf Google veröffentlichen?'
+      );
+      if (!ok) return;
+
+      publishBtn.disabled = true;
+      if (forceBtn) forceBtn.disabled = true;
+      statusEl.textContent = 'Veröffentliche …';
+
+      try {
+        const res = await fetch('/api/publish_reply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ rid, replyText, force })
+        });
+
+        const data = await res.json().catch(() => ({}));
+
+        if (res.status === 409 && data && data.error === 'already_replied') {
+          statusEl.textContent = 'Es existiert bereits eine Antwort. Du kannst überschreiben.';
+          if (forceBtn) forceBtn.style.display = 'inline-flex';
+          return;
+        }
+
+        if (!res.ok) {
+          statusEl.textContent = 'Fehler: ' + (data.detail || data.error || (res.status + ' ' + res.statusText));
+          return;
+        }
+
+        statusEl.textContent = 'Veröffentlicht.';
+        if (forceBtn) forceBtn.style.display = 'none';
+      } catch (e) {
+        statusEl.textContent = 'Netzwerkfehler: ' + (e && e.message ? e.message : String(e));
+      } finally {
+        publishBtn.disabled = false;
+        if (forceBtn) forceBtn.disabled = false;
+      }
+    }
+
+    publishBtn.addEventListener('click', () => publish(false));
+    if (forceBtn) forceBtn.addEventListener('click', () => publish(true));
+  }
 });
 </script>
-
 </body>
 </html>
