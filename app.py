@@ -2,6 +2,7 @@ import os
 import json
 import time
 import secrets
+import re
 from datetime import datetime, timezone
 from urllib import request as urlrequest
 
@@ -51,7 +52,9 @@ def prefill_init():
             )
             # Falls Tabelle schon existiert (ältere Version), fehlende Spalten nachziehen
             cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS used_at BIGINT;")
-            cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS used_count INT NOT NULL DEFAULT 0;")
+            cur.execute(
+                "ALTER TABLE prefill ADD COLUMN IF NOT EXISTS used_count INT NOT NULL DEFAULT 0;"
+            )
         conn.commit()
 
 
@@ -63,23 +66,83 @@ def prefill_cleanup():
         conn.commit()
 
 
-def _compose_review_text(review: str, reviewer: str = "", reviewed_at: str = "") -> str:
-    review = (review or "").strip()
+def _strip_trailing_meta_lines(text: str) -> str:
+    """
+    Entfernt am Ende des Textes typische Abbinder-Zeilen wie:
+    '— Name, am 18.12.2025 14:39:53'
+    ' - Name, am ...'
+    und auch doppelte Wiederholungen davon.
+    """
+    text = (text or "").strip()
+    if not text:
+        return ""
+
+    # Leere Zeilen entfernen, aber innere Zeilen beibehalten
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    # trim trailing empty lines
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    # Heuristik: Meta-Zeile startet mit — oder - und enthält "am " oder ein Datumsformat
+    date_hint = re.compile(r"\b\d{1,2}\.\d{1,2}\.\d{2,4}\b")
+    def is_meta_line(ln: str) -> bool:
+        s = ln.strip()
+        if not s:
+            return False
+        if not re.match(r"^[—-]\s+", s):
+            return False
+        if " am " in s:
+            return True
+        if date_hint.search(s):
+            return True
+        return False
+
+    # Entferne alle Meta-Zeilen am Ende (auch mehrfach)
+    while lines and is_meta_line(lines[-1]):
+        lines.pop()
+        while lines and not lines[-1].strip():
+            lines.pop()
+
+    return "\n".join([ln for ln in lines]).strip()
+
+
+def _compose_review_text(review_raw: str, reviewer: str = "", reviewed_at: str = "") -> str:
+    """
+    Baut den sichtbaren Text genau einmal zusammen:
+    <review>
+    — <reviewer>, am <reviewed_at>
+
+    Verhindert zuverlässig doppelte Abbinder, auch wenn review_raw schon einen hat.
+    """
+    review_raw = (review_raw or "").strip()
     reviewer = (reviewer or "").strip()
     reviewed_at = (reviewed_at or "").strip()
 
-    if not reviewer and not reviewed_at:
-        return review
+    # Sanitization: keine Zeilenumbrüche in Meta-Feldern
+    if reviewer:
+        reviewer = reviewer.splitlines()[0].strip()
+    if reviewed_at:
+        reviewed_at = reviewed_at.splitlines()[0].strip()
 
-    # Format exakt wie in deinem Mail-Beispiel
+    # Wenn keine Metadaten vorhanden sind, einfach raw zurückgeben
+    if not reviewer and not reviewed_at:
+        return review_raw
+
+    # Sicherheit: falls raw versehentlich comment_full enthält -> Meta entfernen
+    base = _strip_trailing_meta_lines(review_raw)
+
     suffix_parts = []
     if reviewer:
         suffix_parts.append(reviewer)
     if reviewed_at:
         suffix_parts.append(f"am {reviewed_at}")
 
-    suffix = ", ".join(suffix_parts)
-    return f"{review}\n— {suffix}"
+    suffix = ", ".join([p for p in suffix_parts if p]).strip()
+    meta_line = f"— {suffix}".strip()
+
+    if base:
+        return f"{base}\n{meta_line}"
+    return meta_line
 
 
 def prefill_insert(payload: dict) -> str:
@@ -99,6 +162,7 @@ def prefill_insert(payload: dict) -> str:
 def prefill_get(rid: str):
     if not rid:
         return None
+    # Cleanup nicht zwingend bei jedem GET, aber ok bei eurem Traffic
     prefill_cleanup()
     with pg_connect() as conn:
         with conn.cursor() as cur:
@@ -106,7 +170,14 @@ def prefill_get(rid: str):
             row = cur.fetchone()
             if not row:
                 return None
-            return row[0]
+            payload = row[0]
+            # je nach psycopg2-config kann JSONB als dict oder str kommen
+            if isinstance(payload, str):
+                try:
+                    payload = json.loads(payload)
+                except Exception:
+                    return None
+            return payload
 
 
 def prefill_mark_used(rid: str):
@@ -131,14 +202,19 @@ def api_prefill_create():
 
     data = request.get_json(silent=True) or {}
 
-    review = (data.get("review") or "").strip()
+    # Input: review soll RAW sein (ohne Abbinder).
+    # Falls Make/Zapier aber versehentlich comment_full schickt, fangen wir es ab.
+    review_in = (data.get("review") or "").strip()
+    comment_full = (data.get("comment_full") or "").strip()
+    if not review_in and comment_full:
+        review_in = comment_full
+
     rating_raw = data.get("rating")
 
-    # optional (neu)
     reviewer = (data.get("reviewer") or "").strip()
     reviewed_at = (data.get("reviewed_at") or "").strip()
 
-    if not review or len(review) > 8000:
+    if not review_in or len(review_in) > 8000:
         return jsonify({"error": "invalid review"}), 400
 
     rating = ""
@@ -151,14 +227,16 @@ def api_prefill_create():
         except Exception:
             return jsonify({"error": "invalid rating"}), 400
 
-    review_full = _compose_review_text(review, reviewer=reviewer, reviewed_at=reviewed_at)
+    # Wichtig: Wir speichern RAW + Meta separat (nicht den zusammengesetzten Text)
+    review_raw = _strip_trailing_meta_lines(review_in)
 
     payload = {
-        "review": review_full,
+        "review_raw": review_raw,
         "rating": rating,
-        # optional: du kannst es separat behalten, falls du später im UI was anzeigen willst
         "reviewer": reviewer,
         "reviewed_at": reviewed_at,
+        # optional: falls du es später brauchst (nicht fürs UI)
+        "comment_full": comment_full or "",
     }
 
     rid = prefill_insert(payload)
@@ -183,12 +261,25 @@ def index():
     if rid:
         payload = prefill_get(rid)
         if payload:
-            reviews = [{
-                "review": payload.get("review") or "",
-                "rating": payload.get("rating") or "",
-                "reviewType": "",
-                "salutation": "",
-            }]
+            # Neue Struktur bevorzugen
+            if payload.get("review_raw") is not None:
+                review_text = _compose_review_text(
+                    payload.get("review_raw") or "",
+                    reviewer=payload.get("reviewer") or "",
+                    reviewed_at=payload.get("reviewed_at") or "",
+                )
+            else:
+                # Legacy: alte Einträge hatten ggf. nur "review"
+                review_text = (payload.get("review") or "").strip()
+
+            reviews = [
+                {
+                    "review": review_text,
+                    "rating": payload.get("rating") or "",
+                    "reviewType": "",
+                    "salutation": "",
+                }
+            ]
 
     return render_template("index.html", values=values, reviews=reviews, replies=None, rid=rid)
 
