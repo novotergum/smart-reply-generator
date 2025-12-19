@@ -3,27 +3,30 @@ import json
 import time
 import secrets
 import re
-from datetime import datetime, timezone
-from urllib import request as urlrequest
+from datetime import datetime
 from typing import Dict, Any, Optional
 
 import psycopg2
-import requests
-from flask import Flask, render_template, request, jsonify, redirect, url_for, abort, Response
+from flask import Flask, render_template, request, jsonify, redirect, url_for, abort
 from openai import OpenAI
 from dotenv import load_dotenv
 
 from generate_prompt import build_prompt, split_public_and_insights
 
+# --------------------------------------------------------
+# Grundkonfiguration
+# --------------------------------------------------------
+
 load_dotenv()
 app = Flask(__name__)
+
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAX_REVIEWS = 10
 MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "")
 PREFILL_SECRET = os.getenv("PREFILL_SECRET", "")
-PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))  # 3 Tage
 DATABASE_URL = os.getenv("DATABASE_URL", "")
+PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))  # 3 Tage
 
 
 def env_truthy(v: str) -> bool:
@@ -33,19 +36,10 @@ def env_truthy(v: str) -> bool:
 ENABLE_PUBLISH = env_truthy("ENABLE_PUBLISH")
 PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
 
-GBP_CLIENT_ID = os.getenv("GBP_CLIENT_ID", "")
-GBP_CLIENT_SECRET = os.getenv("GBP_CLIENT_SECRET", "")
-GBP_REFRESH_TOKEN = os.getenv("GBP_REFRESH_TOKEN", "")
-
-BASIC_AUTH_USER = os.getenv("BASIC_AUTH_USER", "")
-BASIC_AUTH_PASS = os.getenv("BASIC_AUTH_PASS", "")
-
-_GBP_TOKEN_CACHE: Dict[str, Any] = {"token": None, "exp": 0}
-
-
-# -------------------------------------------------
+# --------------------------------------------------------
 # Datenbank (prefill)
-# -------------------------------------------------
+# --------------------------------------------------------
+
 def pg_connect():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing")
@@ -53,10 +47,11 @@ def pg_connect():
 
 
 def prefill_init():
+    """Erstellt Tabelle 'prefill', falls sie noch nicht existiert."""
     with pg_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """CREATE TABLE IF NOT EXISTS prefill (
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS prefill (
                     rid TEXT PRIMARY KEY,
                     payload JSONB NOT NULL,
                     created_at BIGINT NOT NULL,
@@ -64,12 +59,13 @@ def prefill_init():
                     used_count INT DEFAULT 0,
                     generated JSONB,
                     generated_at BIGINT
-                )"""
-            )
+                )
+            """)
         conn.commit()
 
 
 def prefill_insert(payload: dict) -> str:
+    """Speichert Prefill-Request und gibt die RID zurück."""
     rid = secrets.token_urlsafe(18)
     with pg_connect() as conn:
         with conn.cursor() as cur:
@@ -81,7 +77,8 @@ def prefill_insert(payload: dict) -> str:
     return rid
 
 
-def prefill_get_row(rid: str):
+def prefill_get_row(rid: str) -> Optional[dict]:
+    """Lädt gespeicherte Bewertung + generierte Antwort."""
     if not rid:
         return None
     with pg_connect() as conn:
@@ -96,6 +93,7 @@ def prefill_get_row(rid: str):
 
 
 def prefill_set_generated(rid: str, data: dict):
+    """Speichert generierte Antwort(en) in der Datenbank."""
     if not rid:
         return
     with pg_connect() as conn:
@@ -107,9 +105,10 @@ def prefill_set_generated(rid: str, data: dict):
         conn.commit()
 
 
-# -------------------------------------------------
-# Reviewer-Zeilen bereinigen
-# -------------------------------------------------
+# --------------------------------------------------------
+# Reviewer-Deduplikation
+# --------------------------------------------------------
+
 def _suffix_line(name: str, date: str) -> str:
     parts = []
     if name.strip():
@@ -123,45 +122,47 @@ def _suffix_line(name: str, date: str) -> str:
 
 def _dedupe_reviewer(text: str, reviewer: str, reviewed_at: str) -> str:
     """
-    Entfernt doppelte Zeilen wie
-    — Rene Klein, am ...
+    Entfernt doppelte Zeilen wie:
+    — Rene Klein, am 18.12.2025 16:48:07
     und hängt sie höchstens einmal an.
     """
     text = (text or "").strip()
     if not text:
         return text
 
-    suf = _suffix_line(reviewer, reviewed_at)
-    if not suf:
+    suffix = _suffix_line(reviewer, reviewed_at)
+    if not suffix:
         return text
 
     # Normalize dash
-    normalized_suffix = suf.replace("–", "—").replace("-", "—")
+    normalized_suffix = suffix.replace("–", "—").replace("-", "—")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
     # Entferne doppelte identische Suffix-Zeilen
     while lines and lines[-1].replace("–", "—").replace("-", "—") == normalized_suffix:
         lines.pop()
 
+    # Hänge nur eine Suffix-Zeile an
     lines.append(normalized_suffix)
     return "\n".join(lines)
 
 
-# -------------------------------------------------
-# Prefill API
-# -------------------------------------------------
+# --------------------------------------------------------
+# Prefill API (z. B. Make-Webhook)
+# --------------------------------------------------------
+
 @app.post("/api/prefill")
 def api_prefill():
     if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
         abort(401)
-    data = request.get_json(force=True)
 
+    data = request.get_json(force=True)
     review = (data.get("review") or "").strip()
     reviewer = (data.get("reviewer") or "").strip()
     reviewed_at = (data.get("reviewed_at") or "").strip()
     rating = str(data.get("rating") or "").strip()
 
-    # Dedupe Reviewer-Zeilen
+    # Reviewer-Zeile deduplizieren
     review = _dedupe_reviewer(review, reviewer, reviewed_at)
 
     payload = {
@@ -173,13 +174,15 @@ def api_prefill():
         "locationId": data.get("locationId"),
         "reviewId": data.get("reviewId"),
     }
+
     rid = prefill_insert(payload)
     return jsonify({"rid": rid})
 
 
-# -------------------------------------------------
-# Generate
-# -------------------------------------------------
+# --------------------------------------------------------
+# Index + Generator
+# --------------------------------------------------------
+
 @app.route("/", methods=["GET"])
 def index():
     rid = (request.args.get("rid") or "").strip()
@@ -217,22 +220,29 @@ def generate():
     ratings = request.form.getlist("rating")
 
     replies = []
+
     for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
         if not rev.strip():
             continue
+
         rating = ratings[idx] if idx < len(ratings) else ""
+
         prompt = build_prompt(
             {
                 "review": rev,
                 "rating": rating,
                 "selectedTone": request.form.get("selectedTone", "friendly"),
                 "corporateSignature": request.form.get("corporateSignature", "Ihr NOVOTERGUM Team"),
+                "contactEmail": request.form.get("contactEmail", ""),
                 "languageMode": request.form.get("languageMode", "de"),
             }
         )
+
         response = client.chat.completions.create(
-            model="gpt-4.1-mini", messages=[{"role": "user", "content": prompt}]
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
         )
+
         raw = response.choices[0].message.content.strip()
         public, insights = split_public_and_insights(raw)
         replies.append({"review": rev, "reply": public, "insights": insights})
@@ -250,6 +260,10 @@ def generate():
         publish_ui_enabled=PUBLISH_UI_ENABLED,
     )
 
+
+# --------------------------------------------------------
+# Initialisierung
+# --------------------------------------------------------
 
 if DATABASE_URL:
     prefill_init()
