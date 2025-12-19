@@ -308,8 +308,8 @@
         <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
       </div>
 
-{# Publishing-UI: anzeigen, sobald UI enabled + rid + genau 1 Reply #}
-{% if publish_ui_enabled and rid and (replies|length == 1) %}
+{# Publishing-UI: genau einmal anzeigen (bei erster Reply-Card), sobald UI enabled + rid #}
+{% if loop.first and publish_ui_enabled and rid %}
   {% if publish_enabled and publish_ready %}
     <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
       <button type="button" class="btn-secondary" id="publish-btn" disabled
@@ -326,15 +326,11 @@
         Auf Google veröffentlichen (nicht bereit)
       </button>
       <span class="hint" style="margin:0;">
-        Publishing-Button wird angezeigt, aber <b>publish_ready</b> ist noch false – es fehlen <b>accountId/locationId/reviewId</b> im Prefill-Payload.
+        publish_ready=false – es fehlen accountId/locationId/reviewId im Prefill-Payload.
       </span>
     </div>
   {% endif %}
 {% endif %}
-    </article>
-    {% endfor %}
-  </section>
-  {% endif %}
 </div>
 
 <script>
