@@ -1,3 +1,4 @@
+<!-- templates/index.html -->
 <!doctype html>
 <html lang="de">
 <head>
@@ -183,6 +184,7 @@
     }
   </style>
 </head>
+
 <body>
 <div class="page">
   <h1>Smart Reply Generator für Bewertungen</h1>
@@ -201,7 +203,11 @@
       <div class="review-block">
         <div class="review-block-header">
           <p class="review-heading">Bewertung {{ loop.index }}</p>
-          <button type="button" class="remove-review-btn">Entfernen</button>
+
+          {# Prefill-Modus (rid) = Single-Review ⇒ Entfernen ausblenden #}
+          {% if not prefill_mode %}
+            <button type="button" class="remove-review-btn">Entfernen</button>
+          {% endif %}
         </div>
 
         <div class="field">
@@ -247,11 +253,14 @@
       {% endfor %}
     </div>
 
-    <div style="margin:6px 0 4px;">
-      <button type="button" id="add-review-btn" class="btn-secondary">
-        + Weitere Bewertung hinzufügen
-      </button>
-    </div>
+    {# Prefill-Modus (rid) = Single-Review ⇒ Add-Button ausblenden #}
+    {% if not prefill_mode %}
+      <div style="margin:6px 0 4px;">
+        <button type="button" id="add-review-btn" class="btn-secondary">
+          + Weitere Bewertung hinzufügen
+        </button>
+      </div>
+    {% endif %}
 
     <div class="grid">
       <div>
@@ -293,56 +302,56 @@
     </div>
   </form>
 
-{% if replies %}
-<section class="results">
-  <h2>Antwortvorschläge</h2>
+  {% if replies %}
+  <section class="results">
+    <h2>Antwortvorschläge</h2>
 
-  {% for item in replies %}
-  <article class="reply-card">
-    <h3>Bewertung {{ loop.index }}</h3>
-    <p class="original-label">Originalbewertung:</p>
-    <p class="original-review">{{ item.review }}</p>
+    {% for item in replies %}
+    <article class="reply-card">
+      <h3>Bewertung {{ loop.index }}</h3>
+      <p class="original-label">Originalbewertung:</p>
+      <p class="original-review">{{ item.review }}</p>
 
-    <div class="field">
-      <label for="reply_{{ loop.index0 }}">Öffentliche Antwort</label>
-      <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
-    </div>
+      <div class="field">
+        <label for="reply_{{ loop.index0 }}">Öffentliche Antwort</label>
+        <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
+      </div>
 
-    {# Publishing-UI: genau einmal anzeigen (bei erster Reply-Card), sobald UI enabled + rid #}
-    {% if loop.first and publish_ui_enabled and rid %}
-      {% if publish_enabled and publish_ready %}
-        <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-          <button type="button" class="btn-secondary" id="publish-btn" disabled
-                  title="Der Publishing-Button ist aktuell absichtlich deaktiviert (Testmodus).">
-            Auf Google veröffentlichen (deaktiviert)
-          </button>
-          <span class="hint" id="publish-status" style="margin:0;">
-            Publishing ist bereit (accountId/locationId/reviewId vorhanden), Button ist aber absichtlich deaktiviert.
-          </span>
-        </div>
-      {% else %}
-        <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-          <button type="button" class="btn-secondary" disabled>
-            Auf Google veröffentlichen (nicht bereit)
-          </button>
-          <span class="hint" style="margin:0;">
-            publish_ready=false – es fehlen:
-            <b>{{ publish_missing | join(', ') }}</b>
-          </span>
-        </div>
+      {# Publishing-UI: genau einmal anzeigen (bei erster Reply-Card), sobald UI enabled + rid #}
+      {% if loop.first and publish_ui_enabled and rid %}
+        {% if publish_enabled and publish_ready %}
+          <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <button type="button" class="btn-secondary" id="publish-btn" disabled
+                    title="Der Publishing-Button ist aktuell absichtlich deaktiviert (Testmodus).">
+              Auf Google veröffentlichen (deaktiviert)
+            </button>
+            <span class="hint" id="publish-status" style="margin:0;">
+              Publishing ist bereit (accountId/locationId/reviewId vorhanden), Button ist aber absichtlich deaktiviert.
+            </span>
+          </div>
+        {% else %}
+          <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <button type="button" class="btn-secondary" disabled>
+              Auf Google veröffentlichen (nicht bereit)
+            </button>
+            <span class="hint" style="margin:0;">
+              publish_ready=false – es fehlen:
+              <b>{{ publish_missing | join(', ') }}</b>
+            </span>
+          </div>
+        {% endif %}
       {% endif %}
-    {% endif %}
 
-    {% if item.insights %}
-    <details>
-      <summary>Interne Insights (nicht veröffentlichen)</summary>
-      <pre>{{ item.insights | tojson(indent=2) }}</pre>
-    </details>
-    {% endif %}
-  </article>
-  {% endfor %}
-</section>
-{% endif %}
+      {% if item.insights %}
+      <details>
+        <summary>Interne Insights (nicht veröffentlichen)</summary>
+        <pre>{{ item.insights | tojson(indent=2) }}</pre>
+      </details>
+      {% endif %}
+    </article>
+    {% endfor %}
+  </section>
+  {% endif %}
 </div>
 
 <script>
@@ -449,7 +458,7 @@ document.addEventListener('DOMContentLoaded', function () {
       btn.closest('.review-block').remove();
       renumberBlocks();
 
-      if (blocks.length - 1 < MAX_REVIEWS) {
+      if (addBtn && blocks.length - 1 < MAX_REVIEWS) {
         addBtn.disabled = false;
         addBtn.textContent = '+ Weitere Bewertung hinzufügen';
       }
