@@ -1,6 +1,6 @@
-flask
+Flask
 gunicorn
 python-dotenv
-psycopg2-binary
 openai
+psycopg2-binary
 requests
