@@ -1,8 +1,8 @@
+# app.py
 import os
 import json
 import time
 import secrets
-from datetime import datetime
 from typing import Any, Dict, Optional, Tuple, List
 
 import psycopg2
@@ -257,6 +257,8 @@ def api_debug_prefill():
 @app.route("/", methods=["GET"])
 def index():
     rid = (request.args.get("rid") or "").strip()
+    prefill_mode = bool(rid)
+
     reviews, replies = [{}], None
 
     publish_ready = False
@@ -293,6 +295,7 @@ def index():
         reviews=reviews,
         replies=replies,
         rid=rid,
+        prefill_mode=prefill_mode,
 
         publish_enabled=ENABLE_PUBLISH,
         publish_ui_enabled=PUBLISH_UI_ENABLED,
@@ -331,9 +334,7 @@ def generate():
 
     pairs = _first_non_empty_pairs(reviews, ratings)
 
-    # --------------------------------------------------------
-    # FIX: rid steht für genau 1 Review → nur das erste nicht-leere Paar verarbeiten
-    # --------------------------------------------------------
+    # rid steht für genau 1 Review → nur das erste nicht-leere Paar verarbeiten
     if rid and pairs:
         if len(pairs) > 1:
             app.logger.warning("generate rid=%s received %s reviews; forcing single-review mode", rid, len(pairs))
@@ -372,6 +373,7 @@ def generate():
         reviews=[{"review": r} for r in reviews],
         replies=replies,
         rid=rid,
+        prefill_mode=False,
 
         publish_enabled=ENABLE_PUBLISH,
         publish_ui_enabled=PUBLISH_UI_ENABLED,
