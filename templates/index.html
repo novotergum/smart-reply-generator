@@ -292,8 +292,6 @@
       </button>
     </div>
   </form>
-  
-<!-- ... deine bestehende index.html bleibt bis zum Results-Teil identisch ... -->
 
   {% if replies %}
   <section class="results">
@@ -310,21 +308,6 @@
         <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
       </div>
 
-      {% if publish_enabled and rid and (replies|length == 1) %}
-      <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-        <button type="button" class="btn-secondary" id="publish-btn">
-          Auf Google veröffentlichen
-        </button>
-        <button type="button" class="btn-secondary" id="publish-force-btn" style="display:none;">
-          Überschreiben & veröffentlichen
-        </button>
-        <span class="hint" id="publish-status" style="margin:0;"></span>
-      </div>
-      <p class="hint" style="margin-top:8px;">
-        Hinweis: veröffentlicht die Antwort direkt in Google Business Profile. Bitte vorher prüfen.
-      </p>
-      {% endif %}
-
       {% if item.insights %}
       <details>
         <summary>Interne Insights (nicht veröffentlichen)</summary>
@@ -339,73 +322,159 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function () {
-  // ... dein bestehendes JS bleibt ...
-});
-</script>
+  const container  = document.getElementById('reviews-container');
+  const addBtn     = document.getElementById('add-review-btn');
+  const form       = document.querySelector('form');
+  const submitBtn  = document.getElementById('submit-btn');
 
-{% if publish_enabled and rid and replies and (replies|length == 1) %}
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-  const rid = {{ (rid or '') | tojson }};
-  const publishBtn = document.getElementById('publish-btn');
-  const forceBtn = document.getElementById('publish-force-btn');
-  const statusEl = document.getElementById('publish-status');
-  const replyTa = document.getElementById('reply_0');
+  const MAX_REVIEWS  = 10;
+  const DAILY_LIMIT  = 50;
+  const USAGE_KEY    = 'smartReplyDailyUsage_v1';
 
-  if (!publishBtn || !statusEl || !replyTa) return;
+  function todayISO() {
+    return new Date().toISOString().slice(0, 10);
+  }
 
-  async function publish(force=false) {
-    const replyText = (replyTa.value || '').trim();
-    if (!replyText) {
-      statusEl.textContent = 'Keine Antwort vorhanden.';
-      return;
-    }
-
-    const ok = confirm(force
-      ? 'Achtung: vorhandene Google-Antwort wird überschrieben. Wirklich veröffentlichen?'
-      : 'Antwort wirklich auf Google veröffentlichen?'
-    );
-    if (!ok) return;
-
-    publishBtn.disabled = true;
-    if (forceBtn) forceBtn.disabled = true;
-    statusEl.textContent = 'Veröffentliche …';
-
+  function loadUsage() {
+    const today = todayISO();
     try {
-      const res = await fetch('/api/publish_reply', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rid, replyText, force })
-      });
-
-      const data = await res.json().catch(() => ({}));
-
-      if (res.status === 409 && data && data.error === 'already_replied') {
-        statusEl.textContent = 'Es existiert bereits eine Antwort. Du kannst überschreiben.';
-        if (forceBtn) forceBtn.style.display = 'inline-flex';
-        return;
-      }
-
-      if (!res.ok) {
-        statusEl.textContent = 'Fehler: ' + (data.detail || data.error || (res.status + ' ' + res.statusText));
-        return;
-      }
-
-      statusEl.textContent = 'Veröffentlicht.';
-      if (forceBtn) forceBtn.style.display = 'none';
+      const raw = localStorage.getItem(USAGE_KEY);
+      if (!raw) return { date: today, count: 0 };
+      const obj = JSON.parse(raw);
+      if (!obj || obj.date !== today) return { date: today, count: 0 };
+      if (typeof obj.count !== 'number' || obj.count < 0) return { date: today, count: 0 };
+      return obj;
     } catch (e) {
-      statusEl.textContent = 'Netzwerkfehler: ' + (e && e.message ? e.message : String(e));
-    } finally {
-      publishBtn.disabled = false;
-      if (forceBtn) forceBtn.disabled = false;
+      return { date: today, count: 0 };
     }
   }
 
-  publishBtn.addEventListener('click', () => publish(false));
-  if (forceBtn) forceBtn.addEventListener('click', () => publish(true));
+  function saveUsage(usage) {
+    try { localStorage.setItem(USAGE_KEY, JSON.stringify(usage)); } catch (e) {}
+  }
+
+  function updateDailyLimitUI(usage) {
+    if (!submitBtn) return;
+    const remaining = Math.max(0, DAILY_LIMIT - usage.count);
+
+    if (remaining <= 0) {
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Tageslimit erreicht';
+    } else {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Antwortvorschläge erzeugen (' + remaining + ' übrig)';
+    }
+  }
+
+  let usage = loadUsage();
+  updateDailyLimitUI(usage);
+
+  function renumberBlocks() {
+    if (!container) return;
+    const blocks = container.querySelectorAll('.review-block');
+    blocks.forEach(function (block, index) {
+      const heading = block.querySelector('.review-heading');
+      if (heading) heading.textContent = 'Bewertung ' + (index + 1);
+
+      block.querySelectorAll('[id]').forEach(function (el) {
+        const base = el.id.replace(/_\d+$/, '');
+        el.id = base + '_' + index;
+      });
+      block.querySelectorAll('label[for]').forEach(function (label) {
+        const base = label.getAttribute('for').replace(/_\d+$/, '');
+        label.setAttribute('for', base + '_' + index);
+      });
+    });
+  }
+
+  if (addBtn && container) {
+    addBtn.addEventListener('click', function () {
+      const blocks = container.querySelectorAll('.review-block');
+      if (blocks.length >= MAX_REVIEWS) {
+        alert('Du kannst maximal ' + MAX_REVIEWS + ' Bewertungen gleichzeitig bearbeiten.');
+        return;
+      }
+
+      const last  = blocks[blocks.length - 1];
+      const clone = last.cloneNode(true);
+
+      clone.querySelectorAll('textarea').forEach(el => el.value = '');
+      clone.querySelectorAll('input').forEach(el => el.value = '');
+      clone.querySelectorAll('select').forEach(el => el.selectedIndex = 0);
+
+      container.appendChild(clone);
+      renumberBlocks();
+      clone.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+      if (blocks.length + 1 >= MAX_REVIEWS) {
+        addBtn.disabled = true;
+        addBtn.textContent = 'Max. ' + MAX_REVIEWS + ' Bewertungen erreicht';
+      }
+    });
+  }
+
+  if (container) {
+    container.addEventListener('click', function (e) {
+      const btn = e.target.closest('.remove-review-btn');
+      if (!btn) return;
+
+      const blocks = container.querySelectorAll('.review-block');
+      if (blocks.length <= 1) return;
+
+      btn.closest('.review-block').remove();
+      renumberBlocks();
+
+      if (blocks.length - 1 < MAX_REVIEWS) {
+        addBtn.disabled = false;
+        addBtn.textContent = '+ Weitere Bewertung hinzufügen';
+      }
+    });
+  }
+
+  if (form && submitBtn) {
+    form.addEventListener('submit', function (e) {
+      usage = loadUsage();
+
+      let creditsThisSubmit = 0;
+      if (container) {
+        const blocks = container.querySelectorAll('.review-block');
+        blocks.forEach(function (block) {
+          const textarea = block.querySelector('textarea[name="review"]');
+          if (textarea && textarea.value.trim().length > 0) {
+            creditsThisSubmit += 1;
+          }
+        });
+      }
+
+      if (creditsThisSubmit === 0) return;
+
+      const newCount = usage.count + creditsThisSubmit;
+
+      if (newCount > DAILY_LIMIT) {
+        e.preventDefault();
+        const remaining = Math.max(0, DAILY_LIMIT - usage.count);
+        alert(
+          'Tageslimit erreicht.\n\n' +
+          'Erlaubt: ' + DAILY_LIMIT + ' Bewertungen pro Tag.\n' +
+          'Bisher genutzt: ' + usage.count + '.\n' +
+          'Dieser Vorgang würde weitere ' + creditsThisSubmit +
+          ' Bewertungen verbrauchen, es sind aber nur noch ' + remaining + ' übrig.'
+        );
+        return;
+      }
+
+      usage.count = newCount;
+      usage.date  = todayISO();
+      saveUsage(usage);
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Antwortvorschläge werden erzeugt …';
+    });
+  }
+
+  renumberBlocks();
 });
 </script>
-{% endif %}
 
 </body>
 </html>
