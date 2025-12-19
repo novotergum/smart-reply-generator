@@ -37,7 +37,7 @@ ENABLE_PUBLISH = env_truthy("ENABLE_PUBLISH")
 PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
 
 # --------------------------------------------------------
-# Datenbank (prefill)
+# Datenbank
 # --------------------------------------------------------
 
 def pg_connect():
@@ -47,7 +47,6 @@ def pg_connect():
 
 
 def prefill_init():
-    """Erstellt Tabelle 'prefill', falls sie noch nicht existiert."""
     with pg_connect() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -65,7 +64,6 @@ def prefill_init():
 
 
 def prefill_insert(payload: dict) -> str:
-    """Speichert Prefill-Request und gibt die RID zurück."""
     rid = secrets.token_urlsafe(18)
     with pg_connect() as conn:
         with conn.cursor() as cur:
@@ -78,7 +76,6 @@ def prefill_insert(payload: dict) -> str:
 
 
 def prefill_get_row(rid: str) -> Optional[dict]:
-    """Lädt gespeicherte Bewertung + generierte Antwort."""
     if not rid:
         return None
     with pg_connect() as conn:
@@ -93,7 +90,6 @@ def prefill_get_row(rid: str) -> Optional[dict]:
 
 
 def prefill_set_generated(rid: str, data: dict):
-    """Speichert generierte Antwort(en) in der Datenbank."""
     if not rid:
         return
     with pg_connect() as conn:
@@ -121,34 +117,22 @@ def _suffix_line(name: str, date: str) -> str:
 
 
 def _dedupe_reviewer(text: str, reviewer: str, reviewed_at: str) -> str:
-    """
-    Entfernt doppelte Zeilen wie:
-    — Rene Klein, am 18.12.2025 16:48:07
-    und hängt sie höchstens einmal an.
-    """
     text = (text or "").strip()
     if not text:
         return text
-
     suffix = _suffix_line(reviewer, reviewed_at)
     if not suffix:
         return text
-
-    # Normalize dash
     normalized_suffix = suffix.replace("–", "—").replace("-", "—")
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-    # Entferne doppelte identische Suffix-Zeilen
     while lines and lines[-1].replace("–", "—").replace("-", "—") == normalized_suffix:
         lines.pop()
-
-    # Hänge nur eine Suffix-Zeile an
     lines.append(normalized_suffix)
     return "\n".join(lines)
 
 
 # --------------------------------------------------------
-# Prefill API (z. B. Make-Webhook)
+# API
 # --------------------------------------------------------
 
 @app.post("/api/prefill")
@@ -162,7 +146,6 @@ def api_prefill():
     reviewed_at = (data.get("reviewed_at") or "").strip()
     rating = str(data.get("rating") or "").strip()
 
-    # Reviewer-Zeile deduplizieren
     review = _dedupe_reviewer(review, reviewer, reviewed_at)
 
     payload = {
@@ -203,8 +186,17 @@ def index():
             if row.get("generated"):
                 replies = row["generated"].get("replies")
 
+    # Standardwerte für values, damit index.html korrekt rendert
+    values = {
+        "selectedTone": "friendly",
+        "corporateSignature": "Ihr NOVOTERGUM Team",
+        "contactEmail": "",
+        "languageMode": "de",
+    }
+
     return render_template(
         "index.html",
+        values=values,
         reviews=reviews,
         replies=replies,
         rid=rid,
@@ -219,22 +211,27 @@ def generate():
     reviews = request.form.getlist("review")
     ratings = request.form.getlist("rating")
 
-    replies = []
+    values = {
+        "selectedTone": request.form.get("selectedTone", "friendly"),
+        "corporateSignature": request.form.get("corporateSignature", "Ihr NOVOTERGUM Team"),
+        "contactEmail": request.form.get("contactEmail", ""),
+        "languageMode": request.form.get("languageMode", "de"),
+    }
 
+    replies = []
     for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
         if not rev.strip():
             continue
 
         rating = ratings[idx] if idx < len(ratings) else ""
-
         prompt = build_prompt(
             {
                 "review": rev,
                 "rating": rating,
-                "selectedTone": request.form.get("selectedTone", "friendly"),
-                "corporateSignature": request.form.get("corporateSignature", "Ihr NOVOTERGUM Team"),
-                "contactEmail": request.form.get("contactEmail", ""),
-                "languageMode": request.form.get("languageMode", "de"),
+                "selectedTone": values["selectedTone"],
+                "corporateSignature": values["corporateSignature"],
+                "contactEmail": values["contactEmail"],
+                "languageMode": values["languageMode"],
             }
         )
 
@@ -253,6 +250,7 @@ def generate():
 
     return render_template(
         "index.html",
+        values=values,
         reviews=[{"review": r} for r in reviews],
         replies=replies,
         rid=rid,
@@ -262,7 +260,7 @@ def generate():
 
 
 # --------------------------------------------------------
-# Initialisierung
+# Start
 # --------------------------------------------------------
 
 if DATABASE_URL:
