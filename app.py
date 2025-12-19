@@ -327,16 +327,23 @@ def index():
 @app.route("/generate", methods=["POST"])
 def generate():
     form = request.form
+
+    # 1. rid zuerst lesen, dann notfalls aus Prefill rekonstruieren
     rid = (form.get("rid") or "").strip()
     payload = prefill_get(rid) if rid else None
+    if not payload and rid:
+        app.logger.warning(f"RID {rid} not found in DB")
+
     publish_ready = _publish_ready_from_payload(payload) if payload else False
 
-    if rid:
+    # 2. mark as used, aber nur wenn gültig
+    if rid and payload:
         try:
             prefill_mark_used(rid)
         except Exception as e:
             app.logger.warning("Prefill mark_used failed: %s", e)
 
+    # 3. Formwerte normal übernehmen
     values = {
         "selectedTone": form.get("selectedTone", "friendly"),
         "corporateSignature": form.get("corporateSignature", "Ihr NOVOTERGUM Team"),
@@ -344,6 +351,7 @@ def generate():
         "languageMode": form.get("languageMode", "de"),
     }
 
+    # 4. Listen kürzen
     reviews_list = [t.strip() for t in form.getlist("review")][:MAX_REVIEWS]
     ratings_list = form.getlist("rating")[:MAX_REVIEWS]
     types_list = form.getlist("reviewType")[:MAX_REVIEWS]
@@ -396,34 +404,13 @@ def generate():
             "salutation": sal,
         })
 
-        if insights and MAKE_WEBHOOK_URL:
-            try:
-                payload = {
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "review_text": review_text,
-                    "rating_input": rating_raw,
-                    "tone": values["selectedTone"],
-                    "language": values["languageMode"],
-                    "insights": insights,
-                }
-                urlrequest.urlopen(urlrequest.Request(
-                    MAKE_WEBHOOK_URL,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                ), timeout=3)
-            except Exception as e:
-                app.logger.warning("Webhook failed: %s", e)
-
-    if not review_blocks:
-        review_blocks = [{}]
-
+    # 5. Sicherstellen, dass rid und publish_ready im Render übergeben werden
     return render_template(
         "index.html",
         values=values,
-        reviews=review_blocks,
+        reviews=review_blocks or [{}],
         replies=replies,
-        rid=rid,
+        rid=rid,  # <- bleibt jetzt stabil
         publish_enabled=ENABLE_PUBLISH,
         publish_ready=publish_ready and len(replies) == 1,
     )
