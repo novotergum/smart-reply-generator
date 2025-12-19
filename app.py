@@ -162,6 +162,40 @@ def api_prefill():
     return jsonify({"rid": rid})
 
 
+@app.get("/api/debug/prefill")
+def api_debug_prefill():
+    # Schutz: gleicher Secret wie /api/prefill
+    if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
+        abort(401)
+
+    rid = (request.args.get("rid") or "").strip()
+    if not rid:
+        return jsonify({"ok": False, "error": "missing_rid"}), 400
+
+    row = prefill_get_row(rid)
+    if not row or not row.get("payload"):
+        return jsonify({"ok": False, "error": "not_found", "rid": rid}), 404
+
+    p = row["payload"] or {}
+    publish_ready = bool(p.get("accountId") and p.get("locationId") and p.get("reviewId"))
+    missing = [k for k in ("accountId", "locationId", "reviewId") if not p.get(k)]
+
+    return jsonify({
+        "ok": True,
+        "rid": rid,
+        "publish_ready": publish_ready,
+        "missing": missing,
+        "payload": {
+            "accountId": p.get("accountId"),
+            "locationId": p.get("locationId"),
+            "reviewId": p.get("reviewId"),
+            # optional: Rest mitgeben, wenn du willst:
+            # "reviewer": p.get("reviewer"),
+            # "reviewed_at": p.get("reviewed_at"),
+        }
+    })
+
+
 # --------------------------------------------------------
 # Index + Generator
 # --------------------------------------------------------
