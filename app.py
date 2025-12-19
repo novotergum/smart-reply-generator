@@ -1,11 +1,10 @@
 import os
-import sys
 import json
 import time
 import secrets
-import re
 from datetime import datetime, timezone
 from urllib import request as urlrequest
+from typing import Optional, Dict, Any, Tuple
 
 import psycopg2
 import requests
@@ -27,22 +26,18 @@ PREFILL_SECRET = os.getenv("PREFILL_SECRET", "").strip()
 PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))  # 3 Tage
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
-# Google Business Profile / My Business v4 (Reviews Reply)
+# Publishing (GBP)
+ENABLE_PUBLISH = (os.getenv("ENABLE_PUBLISH", "0").strip() == "1")
 GBP_CLIENT_ID = os.getenv("GBP_CLIENT_ID", "").strip()
 GBP_CLIENT_SECRET = os.getenv("GBP_CLIENT_SECRET", "").strip()
 GBP_REFRESH_TOKEN = os.getenv("GBP_REFRESH_TOKEN", "").strip()
 
-# Optional: Basic-Auth zum Absichern des Publish-Buttons
+# Optional Basic Auth nur fürs Publishing (empfohlen)
 BASIC_AUTH_USER = os.getenv("BASIC_AUTH_USER", "").strip()
 BASIC_AUTH_PASS = os.getenv("BASIC_AUTH_PASS", "").strip()
 
-# Optional: Entfernt "(Translated by Google)"-Block
-STRIP_TRANSLATED_BLOCK = (os.getenv("STRIP_TRANSLATED_BLOCK", "1").strip() == "1")
-
-# In-memory Token Cache (pro Worker)
-_GBP_TOKEN = {"access_token": None, "exp": 0}
-
-PUBLIC_APP_URL = os.getenv("PUBLIC_APP_URL", "").strip() or "https://smart-reply-generator-production2.up.railway.app"
+# simples Token-Caching (Refresh Token -> Access Token)
+_GBP_TOKEN_CACHE: Dict[str, Any] = {"token": None, "exp": 0}
 
 
 def pg_connect():
@@ -82,88 +77,10 @@ def prefill_cleanup():
         conn.commit()
 
 
-def _strip_translated_block(text: str) -> str:
-    """
-    Entfernt typische Google-UI Übersetzungsblöcke.
-    Beispiel:
-      <original>
-      (Translated by Google)
-      <translation>
-    -> behält nur <original>
-    """
-    if not text:
-        return ""
-    t = text.replace("\r\n", "\n").strip()
-
-    if not STRIP_TRANSLATED_BLOCK:
-        return t
-
-    markers = [
-        "\n(Translated by Google)",
-        "\n(Übersetzt von Google)",
-        "\n(Translated by Google)\n",
-        "\n(Übersetzt von Google)\n",
-    ]
-    idx = -1
-    for m in markers:
-        j = t.find(m)
-        if j != -1:
-            idx = j
-            break
-    if idx != -1:
-        t = t[:idx].rstrip()
-
-    return t
-
-
-def _dedupe_trailing_attribution_lines(text: str) -> str:
-    """
-    Entfernt doppelte Attribution-Zeilen am Ende, z.B.
-      — Name, am ...
-      — Name, am ...
-    """
-    if not text:
-        return ""
-    lines = text.replace("\r\n", "\n").split("\n")
-
-    # trim trailing empties
-    while lines and not lines[-1].strip():
-        lines.pop()
-
-    # remove consecutive duplicate attribution lines at end
-    while len(lines) >= 2:
-        a = lines[-1].strip()
-        b = lines[-2].strip()
-        if a == b and a.startswith("—"):
-            lines.pop()
-        else:
-            break
-
-    return "\n".join(lines).strip()
-
-
 def _compose_review_text(review: str, reviewer: str = "", reviewed_at: str = "") -> str:
-    """
-    Baut "review_full" wie im Mail-Format:
-      <review>
-      — <reviewer>, am <reviewed_at>
-    Idempotent: falls am Ende bereits eine '— ...' Zeile existiert, wird NICHT erneut angehängt.
-    """
-    review = _strip_translated_block(review or "")
-    review = _dedupe_trailing_attribution_lines(review)
-
     review = (review or "").strip()
     reviewer = (reviewer or "").strip()
     reviewed_at = (reviewed_at or "").strip()
-
-    if not review:
-        return ""
-
-    # Wenn bereits eine Attribution-Zeile existiert, nicht erneut anhängen
-    # (wir prüfen nur die letzte nicht-leere Zeile)
-    last_line = review.split("\n")[-1].strip()
-    if last_line.startswith("—"):
-        return review
 
     if not reviewer and not reviewed_at:
         return review
@@ -218,73 +135,80 @@ def prefill_mark_used(rid: str):
         conn.commit()
 
 
-def _basic_auth_required() -> bool:
-    return bool(BASIC_AUTH_USER and BASIC_AUTH_PASS)
+def _publish_ready_from_payload(payload: dict) -> bool:
+    if not payload:
+        return False
+    return bool(
+        (payload.get("accountId") or "").strip()
+        and (payload.get("locationId") or "").strip()
+        and (payload.get("reviewId") or "").strip()
+    )
 
 
-def _check_basic_auth():
-    if not _basic_auth_required():
+def _require_basic_auth_if_configured():
+    if not (BASIC_AUTH_USER and BASIC_AUTH_PASS):
         return
     auth = request.authorization
     if not auth or auth.username != BASIC_AUTH_USER or auth.password != BASIC_AUTH_PASS:
-        # Browser-Prompt
-        return abort(401, {"WWW-Authenticate": 'Basic realm="Smart Reply"'})
-    return
+        # Browser Basic-Auth prompt
+        return abort(401, description="Basic auth required")
 
 
-def _gbp_enabled() -> bool:
-    return bool(GBP_CLIENT_ID and GBP_CLIENT_SECRET and GBP_REFRESH_TOKEN)
-
-
-def gbp_access_token() -> str:
-    if not _gbp_enabled():
-        raise RuntimeError("GBP OAuth env missing (GBP_CLIENT_ID/SECRET/REFRESH_TOKEN)")
+def _gbp_access_token() -> str:
+    if not (GBP_CLIENT_ID and GBP_CLIENT_SECRET and GBP_REFRESH_TOKEN):
+        raise RuntimeError("GBP env missing (GBP_CLIENT_ID/GBP_CLIENT_SECRET/GBP_REFRESH_TOKEN)")
 
     now = int(time.time())
-    if _GBP_TOKEN["access_token"] and now < (_GBP_TOKEN["exp"] - 60):
-        return _GBP_TOKEN["access_token"]
+    if _GBP_TOKEN_CACHE["token"] and (_GBP_TOKEN_CACHE["exp"] - 60) > now:
+        return _GBP_TOKEN_CACHE["token"]
 
-    resp = requests.post(
-        "https://oauth2.googleapis.com/token",
-        data={
-            "client_id": GBP_CLIENT_ID,
-            "client_secret": GBP_CLIENT_SECRET,
-            "refresh_token": GBP_REFRESH_TOKEN,
-            "grant_type": "refresh_token",
-        },
-        timeout=20,
-    )
+    url = "https://oauth2.googleapis.com/token"
+    data = {
+        "client_id": GBP_CLIENT_ID,
+        "client_secret": GBP_CLIENT_SECRET,
+        "refresh_token": GBP_REFRESH_TOKEN,
+        "grant_type": "refresh_token",
+    }
+    resp = requests.post(url, data=data, timeout=20)
     if resp.status_code >= 400:
         raise RuntimeError(f"Token error {resp.status_code}: {resp.text}")
 
     j = resp.json()
-    token = j.get("access_token")
-    if not token:
-        raise RuntimeError(f"No access_token: {resp.text}")
+    token = (j.get("access_token") or "").strip()
+    expires_in = int(j.get("expires_in") or 3600)
 
-    exp = now + int(j.get("expires_in", 3600))
-    _GBP_TOKEN.update({"access_token": token, "exp": exp})
+    if not token:
+        raise RuntimeError(f"Token response missing access_token: {resp.text}")
+
+    _GBP_TOKEN_CACHE["token"] = token
+    _GBP_TOKEN_CACHE["exp"] = now + expires_in
     return token
 
 
-def gbp_get_review(account_id: str, location_id: str, review_id: str) -> dict:
-    token = gbp_access_token()
-    url = f"https://mybusiness.googleapis.com/v4/accounts/{account_id}/locations/{location_id}/reviews/{review_id}"
+def _gbp_get_review(name: str) -> dict:
+    # GET https://mybusiness.googleapis.com/v4/{name=accounts/*/locations/*/reviews/*}
+    # (siehe Doku) :contentReference[oaicite:2]{index=2}
+    token = _gbp_access_token()
+    url = f"https://mybusiness.googleapis.com/v4/{name}"
     resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
     if resp.status_code >= 400:
-        raise RuntimeError(f"GET review failed {resp.status_code}: {resp.text}")
+        raise RuntimeError(f"GBP get review failed {resp.status_code}: {resp.text}")
     return resp.json()
 
 
-def gbp_update_reply(account_id: str, location_id: str, review_id: str, reply_text: str) -> dict:
-    token = gbp_access_token()
-    name = f"accounts/{account_id}/locations/{location_id}/reviews/{review_id}"
-    # Laut Doku: PUT .../v4/{name=accounts/*/locations/*/reviews/*}/reply :contentReference[oaicite:2]{index=2}
+def _gbp_update_reply(name: str, reply_text: str) -> dict:
+    # PUT https://mybusiness.googleapis.com/v4/{name=accounts/*/locations/*/reviews/*}/reply :contentReference[oaicite:3]{index=3}
+    token = _gbp_access_token()
     url = f"https://mybusiness.googleapis.com/v4/{name}/reply"
     body = {"comment": reply_text}
-    resp = requests.put(url, headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"}, json=body, timeout=20)
+    resp = requests.put(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=body,
+        timeout=25,
+    )
     if resp.status_code >= 400:
-        raise RuntimeError(f"updateReply failed {resp.status_code}: {resp.text}")
+        raise RuntimeError(f"GBP updateReply failed {resp.status_code}: {resp.text}")
     return resp.json()
 
 
@@ -303,7 +227,7 @@ def api_prefill_create():
     reviewer = (data.get("reviewer") or "").strip()
     reviewed_at = (data.get("reviewed_at") or "").strip()
 
-    # Optional metadata for publishing reply
+    # GBP-Metadaten (neu, für Publishing)
     account_id = (data.get("accountId") or "").strip()
     location_id = (data.get("locationId") or "").strip()
     review_id = (data.get("reviewId") or "").strip()
@@ -326,11 +250,13 @@ def api_prefill_create():
     review_full = _compose_review_text(review, reviewer=reviewer, reviewed_at=reviewed_at)
 
     payload = {
+        # UI-Prefill
         "review": review_full,
         "rating": rating,
         "reviewer": reviewer,
         "reviewed_at": reviewed_at,
-        # meta (optional)
+
+        # Publishing-Context
         "accountId": account_id,
         "locationId": location_id,
         "reviewId": review_id,
@@ -339,7 +265,6 @@ def api_prefill_create():
     }
 
     rid = prefill_insert(payload)
-
     resp = jsonify({"rid": rid})
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -347,62 +272,48 @@ def api_prefill_create():
 
 @app.post("/api/publish_reply")
 def api_publish_reply():
-    """
-    POST JSON:
-      { "rid": "...", "replyText": "...", "force": false }
-    - Lädt accountId/locationId/reviewId aus Prefill payload
-    - Blockt Überschreiben, wenn bereits eine Antwort existiert (außer force=true)
-    """
-    _check_basic_auth()
+    if not ENABLE_PUBLISH:
+        abort(404)
 
-    if not _gbp_enabled():
-        return jsonify({"error": "GBP OAuth not configured"}), 500
+    _require_basic_auth_if_configured()
 
     data = request.get_json(silent=True) or {}
     rid = (data.get("rid") or "").strip()
     reply_text = (data.get("replyText") or "").strip()
-    force = bool(data.get("force", False))
+    force = bool(data.get("force"))
 
-    if not rid:
-        return jsonify({"error": "missing rid"}), 400
-    if not reply_text:
-        return jsonify({"error": "missing replyText"}), 400
-    if len(reply_text) > 3500:
+    if not rid or not reply_text:
+        return jsonify({"error": "missing rid/replyText"}), 400
+    if len(reply_text) > 4096:
         return jsonify({"error": "reply too long"}), 400
 
     payload = prefill_get(rid)
     if not payload:
-        return jsonify({"error": "rid not found"}), 404
+        return jsonify({"error": "rid not found/expired"}), 404
 
     account_id = (payload.get("accountId") or "").strip()
     location_id = (payload.get("locationId") or "").strip()
     review_id = (payload.get("reviewId") or "").strip()
 
     if not (account_id and location_id and review_id):
-        return jsonify({"error": "missing GBP ids in prefill payload"}), 400
+        return jsonify({"error": "rid payload missing accountId/locationId/reviewId"}), 400
 
-    # Schutz: nicht überschreiben, wenn bereits geantwortet
-    try:
-        r = gbp_get_review(account_id, location_id, review_id)
-        existing = (r.get("reviewReply") or {}).get("comment") if isinstance(r.get("reviewReply"), dict) else None
-        if existing and not force:
-            return jsonify({
-                "error": "already_replied",
-                "message": "Für diese Rezension existiert bereits eine Antwort. force=true zum Überschreiben.",
-                "existingReply": existing
-            }), 409
-    except Exception as e:
-        return jsonify({"error": "fetch_review_failed", "detail": str(e)}), 502
+    name = f"accounts/{account_id}/locations/{location_id}/reviews/{review_id}"
+
+    # Wenn nicht force: vorher prüfen, ob schon Reply existiert
+    if not force:
+        try:
+            review_obj = _gbp_get_review(name)
+            existing = ((review_obj.get("reviewReply") or {}).get("comment") or "").strip()
+            if existing:
+                return jsonify({"error": "already_replied"}), 409
+        except Exception as e:
+            # defensiv: wenn GET fehlschlägt, lieber NICHT blind überschreiben
+            return jsonify({"error": "precheck_failed", "detail": str(e)}), 502
 
     try:
-        out = gbp_update_reply(account_id, location_id, review_id, reply_text)
-        return jsonify({
-            "ok": True,
-            "accountId": account_id,
-            "locationId": location_id,
-            "reviewId": review_id,
-            "reply": out
-        })
+        rr = _gbp_update_reply(name, reply_text)
+        return jsonify({"ok": True, "reviewReply": rr})
     except Exception as e:
         return jsonify({"error": "publish_failed", "detail": str(e)}), 502
 
@@ -418,10 +329,12 @@ def index():
         "languageMode": "de",
     }
     reviews = [{}]
+    publish_ready = False
 
     if rid:
         payload = prefill_get(rid)
         if payload:
+            publish_ready = _publish_ready_from_payload(payload)
             reviews = [{
                 "review": payload.get("review") or "",
                 "rating": payload.get("rating") or "",
@@ -435,8 +348,8 @@ def index():
         reviews=reviews,
         replies=None,
         rid=rid,
-        publish_enabled=_gbp_enabled(),
-        basic_auth_required=_basic_auth_required(),
+        publish_enabled=ENABLE_PUBLISH,
+        publish_ready=publish_ready,
     )
 
 
@@ -444,6 +357,9 @@ def index():
 def generate():
     form = request.form
     rid = (form.get("rid") or "").strip()
+    payload = prefill_get(rid) if rid else None
+    publish_ready = _publish_ready_from_payload(payload) if payload else False
+
     if rid:
         try:
             prefill_mark_used(rid)
@@ -530,15 +446,15 @@ def generate():
     if not review_blocks:
         review_blocks = [{}]
 
-    # RID NICHT löschen – wir brauchen es ggf. fürs "Publish to Google"
+    # WICHTIG: rid NICHT leeren, sonst kann Publishing nicht funktionieren
     return render_template(
         "index.html",
         values=values,
         reviews=review_blocks,
         replies=replies,
         rid=rid,
-        publish_enabled=_gbp_enabled(),
-        basic_auth_required=_basic_auth_required(),
+        publish_enabled=ENABLE_PUBLISH,
+        publish_ready=publish_ready and (len(replies) == 1),
     )
 
 
