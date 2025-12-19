@@ -141,6 +141,11 @@ def api_prefill():
         abort(401)
 
     data = request.get_json(force=True)
+
+    app.logger.info("prefill incoming keys=%s", list(data.keys()))
+    app.logger.info("prefill accountId=%s locationId=%s reviewId=%s",
+    data.get("accountId"), data.get("locationId"), data.get("reviewId"))
+
     review = (data.get("review") or "").strip()
     reviewer = (data.get("reviewer") or "").strip()
     reviewed_at = (data.get("reviewed_at") or "").strip()
