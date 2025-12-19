@@ -1,497 +1,539 @@
-<!doctype html>
-<html lang="de">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Smart Reply Generator für Bewertungen</title>
-  <style>
-    :root{
-      --brand:#ff6600; --brand-700:#f25500;
-      --ink:#111827; --muted:#6b7280;
-      --bg:#f3f4f6; --card:#ffffff;
-      --radius:12px; --shadow:0 18px 45px rgba(15,23,42,.12);
+import os
+import json
+import time
+import secrets
+import re
+from datetime import datetime, timezone
+from urllib import request as urlrequest
+from typing import Dict, Any
+
+import psycopg2
+import requests
+from flask import Flask, render_template, request, jsonify, abort
+from openai import OpenAI
+from dotenv import load_dotenv
+
+from generate_prompt import build_prompt, split_public_and_insights
+
+load_dotenv()
+app = Flask(__name__)
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+MAX_REVIEWS = 10
+MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "").strip()
+
+PREFILL_SECRET = os.getenv("PREFILL_SECRET", "").strip()
+PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))  # 3 Tage
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+# Publishing (GBP)
+def _env_truthy(name: str, default: str = "0") -> bool:
+    v = (os.getenv(name, default) or "").strip().lower()
+    return v in {"1", "true", "yes", "on"}
+
+ENABLE_PUBLISH = _env_truthy("ENABLE_PUBLISH", "0")
+GBP_CLIENT_ID = os.getenv("GBP_CLIENT_ID", "").strip()
+GBP_CLIENT_SECRET = os.getenv("GBP_CLIENT_SECRET", "").strip()
+GBP_REFRESH_TOKEN = os.getenv("GBP_REFRESH_TOKEN", "").strip()
+
+# Optional Basic Auth nur fürs Publishing (empfohlen)
+BASIC_AUTH_USER = os.getenv("BASIC_AUTH_USER", "").strip()
+BASIC_AUTH_PASS = os.getenv("BASIC_AUTH_PASS", "").strip()
+
+# simples Token-Caching (Refresh Token -> Access Token)
+_GBP_TOKEN_CACHE: Dict[str, Any] = {"token": None, "exp": 0}
+
+
+def pg_connect():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL missing (add Railway Postgres)")
+    return psycopg2.connect(
+        DATABASE_URL,
+        sslmode=os.getenv("PGSSLMODE", "prefer"),
+        connect_timeout=int(os.getenv("PG_CONNECT_TIMEOUT", "5")),
+    )
+
+
+def prefill_init():
+    with pg_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS prefill (
+                  rid TEXT PRIMARY KEY,
+                  payload JSONB NOT NULL,
+                  created_at BIGINT NOT NULL,
+                  used_at BIGINT,
+                  used_count INT NOT NULL DEFAULT 0
+                )
+                """
+            )
+            cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS used_at BIGINT;")
+            cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS used_count INT NOT NULL DEFAULT 0;")
+        conn.commit()
+
+
+def prefill_cleanup():
+    cutoff = int(time.time()) - PREFILL_TTL_SECONDS
+    with pg_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM prefill WHERE created_at < %s", (cutoff,))
+        conn.commit()
+
+
+def _dedupe_consecutive_lines(lines):
+    out = []
+    for l in lines:
+        if out and l == out[-1]:
+            continue
+        out.append(l)
+    return out
+
+
+def _compose_review_text(review: str, reviewer: str = "", reviewed_at: str = "") -> str:
+    """
+    Idempotent:
+    - entfernt doppelte Abbinder-Zeilen am Ende (z. B. zweimal "— Rene Klein, am ...")
+    - hängt Abbinder nur an, wenn er noch nicht vorhanden ist
+    """
+    review = (review or "").strip()
+    reviewer = (reviewer or "").strip()
+    reviewed_at = (reviewed_at or "").strip()
+
+    if not review:
+        return ""
+
+    # Normalize lines + remove consecutive duplicates (hilft gegen 2x gleiche Zeile)
+    lines = [ln.rstrip() for ln in review.splitlines()]
+    lines = _dedupe_consecutive_lines(lines)
+
+    # Entferne doppelte Abbinder-Zeilen am Ende auch wenn nicht direkt aufeinander folgen
+    # (typisch: letzter und vorletzter identisch)
+    while len(lines) >= 2 and lines[-1].strip() and lines[-1].strip() == lines[-2].strip():
+        lines.pop()
+
+    # Wenn kein Reviewer/Datum geliefert wird: nur dedupe anwenden
+    if not reviewer and not reviewed_at:
+        return "\n".join(lines).strip()
+
+    # Ziel-Abbinder in einheitlicher Form
+    suffix_parts = []
+    if reviewer:
+        suffix_parts.append(reviewer)
+    if reviewed_at:
+        suffix_parts.append(f"am {reviewed_at}")
+    suffix = ", ".join(suffix_parts)
+    suffix_line = f"— {suffix}".strip()
+
+    # Prüfen: existiert bereits ein Abbinder mit Reviewer/Datum in den letzten 3 Zeilen?
+    tail = [l.strip() for l in lines[-3:]] if len(lines) >= 3 else [l.strip() for l in lines]
+
+    if suffix_line in tail or suffix_line in lines:
+        return "\n".join(lines).strip()
+
+    # Fuzzy-Erkennung: "— <reviewer> ... <date>"
+    if reviewer:
+        pat = r"^\s*—\s*.*" + re.escape(reviewer) + r".*"
+        if reviewed_at:
+            pat += re.escape(reviewed_at) + r".*"
+        rx = re.compile(pat, re.IGNORECASE)
+        if any(rx.match(l) for l in tail):
+            return "\n".join(lines).strip()
+
+    # Ansonsten anhängen
+    return ("\n".join(lines).strip() + "\n" + suffix_line).strip()
+
+
+def prefill_insert(payload: dict) -> str:
+    rid = secrets.token_urlsafe(18)
+    now = int(time.time())
+    prefill_cleanup()
+    with pg_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO prefill (rid, payload, created_at, used_at, used_count) VALUES (%s, %s, %s, %s, %s)",
+                (rid, json.dumps(payload, ensure_ascii=False), now, None, 0),
+            )
+        conn.commit()
+    return rid
+
+
+def prefill_get(rid: str):
+    if not rid:
+        return None
+    prefill_cleanup()
+    with pg_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT payload FROM prefill WHERE rid = %s", (rid,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            return row[0]
+
+
+def prefill_mark_used(rid: str):
+    if not rid:
+        return
+    now = int(time.time())
+    with pg_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE prefill SET used_at = %s, used_count = used_count + 1 WHERE rid = %s",
+                (now, rid),
+            )
+        conn.commit()
+
+
+def _publish_ready_from_payload(payload: dict) -> bool:
+    if not payload:
+        return False
+    return bool(
+        (payload.get("accountId") or "").strip()
+        and (payload.get("locationId") or "").strip()
+        and (payload.get("reviewId") or "").strip()
+    )
+
+
+def _require_basic_auth_if_configured():
+    if not (BASIC_AUTH_USER and BASIC_AUTH_PASS):
+        return
+    auth = request.authorization
+    if not auth or auth.username != BASIC_AUTH_USER or auth.password != BASIC_AUTH_PASS:
+        return abort(401, description="Basic auth required")
+
+
+def _gbp_access_token() -> str:
+    if not (GBP_CLIENT_ID and GBP_CLIENT_SECRET and GBP_REFRESH_TOKEN):
+        raise RuntimeError("GBP env missing (GBP_CLIENT_ID/GBP_CLIENT_SECRET/GBP_REFRESH_TOKEN)")
+
+    now = int(time.time())
+    if _GBP_TOKEN_CACHE["token"] and (_GBP_TOKEN_CACHE["exp"] - 60) > now:
+        return _GBP_TOKEN_CACHE["token"]
+
+    url = "https://oauth2.googleapis.com/token"
+    data = {
+        "client_id": GBP_CLIENT_ID,
+        "client_secret": GBP_CLIENT_SECRET,
+        "refresh_token": GBP_REFRESH_TOKEN,
+        "grant_type": "refresh_token",
     }
-    *{box-sizing:border-box;}
-    body{
-      margin:0;
-      font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
-      background:var(--bg);
-      color:var(--ink);
-    }
-    .page{
-      max-width:820px;
-      margin:24px auto 40px;
-      padding:24px 20px 32px;
-      background:var(--card);
-      border-radius:var(--radius);
-      box-shadow:var(--shadow);
-    }
-    h1{font-size:22px;margin:0 0 4px;}
-    .lead{margin:0 0 20px;font-size:14px;color:var(--muted);}
-    form{margin:0;}
-    .field{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
-    label{font-size:13px;color:var(--muted);}
-    textarea,input,select{
-      font:inherit;
-      padding:10px 12px;
-      border-radius:10px;
-      border:1px solid #d1d5db;
-      background:#f9fafb;
-    }
-    textarea{resize:vertical; min-height:120px;}
-    select{background-color:#f9fafb;}
-    textarea:focus,input:focus,select:focus{
-      outline:2px solid rgba(255,102,0,.35);
-      border-color:#fb923c;
-      background:#ffffff;
-    }
-    .hint{font-size:11px;color:var(--muted);margin:2px 0 0;}
+    resp = requests.post(url, data=data, timeout=20)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Token error {resp.status_code}: {resp.text}")
 
-    .review-block{padding:16px 0 18px;border-bottom:1px dashed #e5e7eb;}
-    .review-block:last-child{border-bottom:none;}
-    .review-block-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;gap:10px;}
-    .review-heading{font-size:15px;font-weight:600;margin:0;}
-    .remove-review-btn{
-      border-radius:999px;border:0;cursor:pointer;
-      font-size:11px;padding:4px 10px;background:#fee2e2;color:#b91c1c;
-    }
-    .remove-review-btn:hover{background:#fecaca;}
+    j = resp.json()
+    token = (j.get("access_token") or "").strip()
+    expires_in = int(j.get("expires_in") or 3600)
 
-    .btn-primary,.btn-secondary{
-      border-radius:999px;border:0;cursor:pointer;
-      font-size:14px;padding:10px 18px;
-      display:inline-flex;align-items:center;gap:6px;
-    }
-    .btn-primary{
-      background:linear-gradient(180deg,var(--brand),var(--brand-700));
-      color:#fff;
-      box-shadow:0 10px 25px rgba(249,115,22,.45);
-    }
-    .btn-primary:hover{filter:brightness(1.03);}
-    .btn-primary[disabled]{opacity:.6;cursor:not-allowed;box-shadow:none;}
-    .btn-secondary{background:#f3f4f6;color:var(--ink);border:1px solid #e5e7eb;}
-    .btn-secondary:hover{background:#e5e7f3;}
+    if not token:
+        raise RuntimeError(f"Token response missing access_token: {resp.text}")
 
-    .actions{margin-top:16px;}
-    .grid{
-      display:grid;
-      grid-template-columns:1fr;
-      gap:10px 20px;
-      margin-top:10px;
-    }
-    @media (min-width:720px){
-      .grid{grid-template-columns:1.1fr 0.9fr;}
-    }
-    .results{
-      margin-top:28px;
-      padding-top:18px;
-      border-top:1px solid #e5e7eb;
-    }
-    .reply-card{
-      margin-top:14px;
-      padding:14px 12px 14px;
-      border-radius:10px;
-      background:#f9fafb;
-      border:1px solid #e5e7eb;
-    }
-    .reply-card h3{margin:0 0 6px;font-size:14px;}
-    .original-label{margin:4px 0 0;font-size:12px;color:var(--muted);}
-    .original-review{margin:4px 0 8px;font-size:13px;white-space:pre-wrap;}
-    details{margin-top:8px;font-size:12px;}
-    details summary{cursor:pointer;color:var(--muted);}
-    details pre{
-      margin-top:6px;
-      background:#111827;
-      color:#f9fafb;
-      padding:8px 10px;
-      border-radius:8px;
-      overflow-x:auto;
-    }
-    .publish-row{
-      margin-top:10px;
-      display:flex;
-      gap:10px;
-      align-items:center;
-      flex-wrap:wrap;
-    }
-  </style>
-</head>
-<body>
-<div class="page">
-  <h1>Smart Reply Generator für Bewertungen</h1>
-  <p class="lead">
-    Füge eine oder mehrere Google- bzw. Portalbewertungen ein und erhalte passende Antwortvorschläge im NOVOTERGUM-Stil –
-    inklusive interner Analyse für Qualitäts-Insights.
-  </p>
+    _GBP_TOKEN_CACHE["token"] = token
+    _GBP_TOKEN_CACHE["exp"] = now + expires_in
+    return token
 
-  <form method="post" action="/generate">
-    <!-- wichtig: rid vom Prefill-Link wird beim Submit mitgeschickt -->
-    <input type="hidden" name="rid" id="rid-hidden" value="{{ rid or '' }}">
 
-    <div id="reviews-container">
-      {% set _reviews = reviews or [ {} ] %}
-      {% for r in _reviews %}
-      <div class="review-block">
-        <div class="review-block-header">
-          <p class="review-heading">Bewertung {{ loop.index }}</p>
-          <button type="button" class="remove-review-btn">Entfernen</button>
-        </div>
+def _gbp_get_review(name: str) -> dict:
+    token = _gbp_access_token()
+    url = f"https://mybusiness.googleapis.com/v4/{name}"
+    resp = requests.get(url, headers={"Authorization": f"Bearer {token}"}, timeout=20)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"GBP get review failed {resp.status_code}: {resp.text}")
+    return resp.json()
 
-        <div class="field">
-          <label for="review_{{ loop.index0 }}">Bewertungstext</label>
-          <textarea id="review_{{ loop.index0 }}" name="review" required
-                    placeholder="Füge hier die Originalbewertung ein …">{{ r.review or '' }}</textarea>
-        </div>
 
-        <div class="field">
-          <label for="rating_{{ loop.index0 }}">Bewertung (Anzahl Sterne)</label>
-          <select id="rating_{{ loop.index0 }}" name="rating">
-            <option value="">– bitte auswählen –</option>
-            {% for n in range(1,6) %}
-              <option value="{{ n }}"
-                      {% if (r.rating or '') == n|string %}selected{% endif %}>
-                {{ n }} Stern{% if n > 1 %}e{% endif %}
-              </option>
-            {% endfor %}
-          </select>
-          <p class="hint">Hilft, die Antwortstrategie (positiv, neutral, kritisch) passend zu wählen.</p>
-        </div>
+def _gbp_update_reply(name: str, reply_text: str) -> dict:
+    token = _gbp_access_token()
+    url = f"https://mybusiness.googleapis.com/v4/{name}/reply"
+    body = {"comment": reply_text}
+    resp = requests.put(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json=body,
+        timeout=25,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(f"GBP updateReply failed {resp.status_code}: {resp.text}")
+    return resp.json()
 
-        <div class="field">
-          <label for="reviewType_{{ loop.index0 }}">Art der Bewertung</label>
-          <select id="reviewType_{{ loop.index0 }}" name="reviewType">
-            <option value="">– optional, zur besseren Einordnung –</option>
-            <option value="therapy" {% if r.reviewType == 'therapy' %}selected{% endif %}>Therapie / Behandlung</option>
-            <option value="service" {% if r.reviewType == 'service' %}selected{% endif %}>Service / Erreichbarkeit</option>
-            <option value="staff" {% if r.reviewType == 'staff' %}selected{% endif %}>Team / Freundlichkeit / Atmosphäre</option>
-            <option value="organisation" {% if r.reviewType == 'organisation' %}selected{% endif %}>Organisation / Termine</option>
-            <option value="critical" {% if r.reviewType == 'critical' %}selected{% endif %}>Kritische Inhalte / Beschwerde</option>
-            <option value="other" {% if r.reviewType == 'other' %}selected{% endif %}>Sonstiges</option>
-          </select>
-        </div>
 
-        <div class="field">
-          <label for="salutation_{{ loop.index0 }}">Anrede (optional)</label>
-          <input id="salutation_{{ loop.index0 }}" name="salutation"
-                 placeholder='z. B. "Liebe Frau Müller," oder "Guten Tag,"'
-                 value="{{ r.salutation or '' }}">
-        </div>
-      </div>
-      {% endfor %}
-    </div>
+def _dedupe_trailing_signature(text: str, signature: str) -> str:
+    """
+    Falls das Modell die Signatur doppelt ausgibt, entfernen wir Duplikate am Ende.
+    """
+    t = (text or "").strip()
+    sig = (signature or "").strip()
+    if not t or not sig:
+        return t
 
-    <div style="margin:6px 0 4px;">
-      <button type="button" id="add-review-btn" class="btn-secondary">
-        + Weitere Bewertung hinzufügen
-      </button>
-    </div>
+    lines = [ln.rstrip() for ln in t.splitlines()]
+    # Entferne leere Endzeilen
+    while lines and not lines[-1].strip():
+        lines.pop()
 
-    <div class="grid">
-      <div>
-        <div class="field">
-          <label for="selectedTone">Tonfall der Antwort</label>
-          <select id="selectedTone" name="selectedTone">
-            <option value="friendly" {% if values.selectedTone == 'friendly' %}selected{% endif %}>Freundlich &amp; nahbar</option>
-            <option value="warm" {% if values.selectedTone == 'warm' %}selected{% endif %}>Warm &amp; wertschätzend</option>
-            <option value="neutral" {% if values.selectedTone == 'neutral' %}selected{% endif %}>Neutral &amp; sachlich</option>
-            <option value="professional" {% if values.selectedTone == 'professional' %}selected{% endif %}>Formell &amp; professionell</option>
-            <option value="casual" {% if values.selectedTone == 'casual' %}selected{% endif %}>Locker &amp; persönlich</option>
-          </select>
-        </div>
-      </div>
+    # Entferne doppelte Signatur am Ende
+    while len(lines) >= 2 and lines[-1].strip() == sig and lines[-2].strip() == sig:
+        lines.pop()
 
-      <div>
-        <div class="field">
-          <label for="corporateSignature">Signatur</label>
-          <input id="corporateSignature" name="corporateSignature"
-                 value="{{ values.corporateSignature or 'Ihr NOVOTERGUM Team' }}">
-        </div>
+    return "\n".join(lines).strip()
 
-        <div class="field">
-          <label for="contactEmail">Kontakt-E-Mail (optional)</label>
-          <input id="contactEmail" name="contactEmail"
-                 placeholder="z. B. standort@novotergum.de"
-                 value="{{ values.contactEmail or '' }}">
-          <p class="hint">Wird vor allem bei kritischen Bewertungen genutzt, um einen direkten Kontakt anzubieten.</p>
-        </div>
-      </div>
-    </div>
 
-    <input type="hidden" name="languageMode" value="{{ values.languageMode or 'de' }}">
+@app.post("/api/prefill")
+def api_prefill_create():
+    if not PREFILL_SECRET:
+        return jsonify({"error": "PREFILL_SECRET not configured"}), 500
+    if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
+        abort(401)
 
-    <div class="actions">
-      <button id="submit-btn" type="submit" class="btn-primary">
-        Antwortvorschläge erzeugen
-      </button>
-    </div>
-  </form>
+    data = request.get_json(silent=True) or {}
 
-  {% if replies %}
-  <section class="results">
-    <h2>Antwortvorschläge</h2>
+    review = (data.get("review") or "").strip()
+    rating_raw = data.get("rating")
 
-    {% for item in replies %}
-    <article class="reply-card">
-      <h3>Bewertung {{ loop.index }}</h3>
-      <p class="original-label">Originalbewertung:</p>
-      <p class="original-review">{{ item.review }}</p>
+    reviewer = (data.get("reviewer") or "").strip()
+    reviewed_at = (data.get("reviewed_at") or "").strip()
 
-      <div class="field">
-        <label for="reply_{{ loop.index0 }}">Öffentliche Antwort</label>
+    # GBP-Metadaten (für Publishing)
+    account_id = (data.get("accountId") or "").strip()
+    location_id = (data.get("locationId") or "").strip()
+    review_id = (data.get("reviewId") or "").strip()
+    store_code = (data.get("storeCode") or "").strip()
+    location_title = (data.get("locationTitle") or "").strip()
 
-        {# Wenn Publishing aktiv ist und genau 1 Reply existiert: editierbar lassen, damit man final anpassen kann #}
-        <textarea id="reply_{{ loop.index0 }}" rows="7"
-          {% if not (publish_enabled and publish_ready and rid and (replies|length == 1)) %}readonly{% endif %}
-        >{{ item.reply }}</textarea>
+    if not review or len(review) > 8000:
+        return jsonify({"error": "invalid review"}), 400
 
-        {% if publish_enabled and publish_ready and rid and (replies|length == 1) and loop.index0 == 0 %}
-          <div class="publish-row">
-            <button type="button" class="btn-secondary" id="publish-btn">
-              Auf Google veröffentlichen
-            </button>
-            <button type="button" class="btn-secondary" id="publish-force-btn" style="display:none;">
-              Überschreiben &amp; veröffentlichen
-            </button>
-            <span class="hint" id="publish-status" style="margin:0;"></span>
-          </div>
-          <p class="hint" style="margin-top:8px;">
-            Hinweis: Veröffentlicht die Antwort direkt im Google Business Profile. Bitte vorher prüfen.
-          </p>
-        {% endif %}
-      </div>
+    rating = ""
+    if rating_raw is not None and str(rating_raw).strip() != "":
+        try:
+            r = int(str(rating_raw).strip())
+            if r < 1 or r > 5:
+                return jsonify({"error": "invalid rating"}), 400
+            rating = str(r)
+        except Exception:
+            return jsonify({"error": "invalid rating"}), 400
 
-      {% if item.insights %}
-      <details>
-        <summary>Interne Insights (nicht veröffentlichen)</summary>
-        <pre>{{ item.insights | tojson(indent=2) }}</pre>
-      </details>
-      {% endif %}
-    </article>
-    {% endfor %}
-  </section>
-  {% endif %}
-</div>
+    # WICHTIG: idempotent (verhindert doppelten Reviewer/Datum-Abbinder)
+    review_full = _compose_review_text(review, reviewer=reviewer, reviewed_at=reviewed_at)
 
-<script>
-document.addEventListener('DOMContentLoaded', function () {
-  const container  = document.getElementById('reviews-container');
-  const addBtn     = document.getElementById('add-review-btn');
-  const form       = document.querySelector('form');
-  const submitBtn  = document.getElementById('submit-btn');
+    payload = {
+        # UI-Prefill
+        "review": review_full,
+        "rating": rating,
+        "reviewer": reviewer,
+        "reviewed_at": reviewed_at,
 
-  const MAX_REVIEWS  = 10;
-  const DAILY_LIMIT  = 50;
-  const USAGE_KEY    = 'smartReplyDailyUsage_v1';
-
-  function todayISO() {
-    return new Date().toISOString().slice(0, 10);
-  }
-
-  function loadUsage() {
-    const today = todayISO();
-    try {
-      const raw = localStorage.getItem(USAGE_KEY);
-      if (!raw) return { date: today, count: 0 };
-      const obj = JSON.parse(raw);
-      if (!obj || obj.date !== today) return { date: today, count: 0 };
-      if (typeof obj.count !== 'number' || obj.count < 0) return { date: today, count: 0 };
-      return obj;
-    } catch (e) {
-      return { date: today, count: 0 };
-    }
-  }
-
-  function saveUsage(usage) {
-    try { localStorage.setItem(USAGE_KEY, JSON.stringify(usage)); } catch (e) {}
-  }
-
-  function updateDailyLimitUI(usage) {
-    if (!submitBtn) return;
-    const remaining = Math.max(0, DAILY_LIMIT - usage.count);
-
-    if (remaining <= 0) {
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Tageslimit erreicht';
-    } else {
-      submitBtn.disabled = false;
-      submitBtn.textContent = 'Antwortvorschläge erzeugen (' + remaining + ' übrig)';
-    }
-  }
-
-  let usage = loadUsage();
-  updateDailyLimitUI(usage);
-
-  function renumberBlocks() {
-    if (!container) return;
-    const blocks = container.querySelectorAll('.review-block');
-    blocks.forEach(function (block, index) {
-      const heading = block.querySelector('.review-heading');
-      if (heading) heading.textContent = 'Bewertung ' + (index + 1);
-
-      block.querySelectorAll('[id]').forEach(function (el) {
-        const base = el.id.replace(/_\d+$/, '');
-        el.id = base + '_' + index;
-      });
-      block.querySelectorAll('label[for]').forEach(function (label) {
-        const base = label.getAttribute('for').replace(/_\d+$/, '');
-        label.setAttribute('for', base + '_' + index);
-      });
-    });
-  }
-
-  if (addBtn && container) {
-    addBtn.addEventListener('click', function () {
-      const blocks = container.querySelectorAll('.review-block');
-      if (blocks.length >= MAX_REVIEWS) {
-        alert('Du kannst maximal ' + MAX_REVIEWS + ' Bewertungen gleichzeitig bearbeiten.');
-        return;
-      }
-
-      const last  = blocks[blocks.length - 1];
-      const clone = last.cloneNode(true);
-
-      clone.querySelectorAll('textarea').forEach(el => el.value = '');
-      clone.querySelectorAll('input').forEach(el => el.value = '');
-      clone.querySelectorAll('select').forEach(el => el.selectedIndex = 0);
-
-      container.appendChild(clone);
-      renumberBlocks();
-      clone.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-      if (blocks.length + 1 >= MAX_REVIEWS) {
-        addBtn.disabled = true;
-        addBtn.textContent = 'Max. ' + MAX_REVIEWS + ' Bewertungen erreicht';
-      }
-    });
-  }
-
-  if (container) {
-    container.addEventListener('click', function (e) {
-      const btn = e.target.closest('.remove-review-btn');
-      if (!btn) return;
-
-      const blocks = container.querySelectorAll('.review-block');
-      if (blocks.length <= 1) return;
-
-      btn.closest('.review-block').remove();
-      renumberBlocks();
-
-      if (blocks.length - 1 < MAX_REVIEWS) {
-        addBtn.disabled = false;
-        addBtn.textContent = '+ Weitere Bewertung hinzufügen';
-      }
-    });
-  }
-
-  // Submit: Tageslimit zählen + Button ausgrauen (während Request läuft)
-  if (form && submitBtn) {
-    form.addEventListener('submit', function (e) {
-      usage = loadUsage();
-
-      let creditsThisSubmit = 0;
-      if (container) {
-        const blocks = container.querySelectorAll('.review-block');
-        blocks.forEach(function (block) {
-          const textarea = block.querySelector('textarea[name="review"]');
-          if (textarea && textarea.value.trim().length > 0) {
-            creditsThisSubmit += 1;
-          }
-        });
-      }
-
-      if (creditsThisSubmit === 0) return;
-
-      const newCount = usage.count + creditsThisSubmit;
-
-      if (newCount > DAILY_LIMIT) {
-        e.preventDefault();
-        const remaining = Math.max(0, DAILY_LIMIT - usage.count);
-        alert(
-          'Tageslimit erreicht.\n\n' +
-          'Erlaubt: ' + DAILY_LIMIT + ' Bewertungen pro Tag.\n' +
-          'Bisher genutzt: ' + usage.count + '.\n' +
-          'Dieser Vorgang würde weitere ' + creditsThisSubmit +
-          ' Bewertungen verbrauchen, es sind aber nur noch ' + remaining + ' übrig.'
-        );
-        return;
-      }
-
-      usage.count = newCount;
-      usage.date  = todayISO();
-      saveUsage(usage);
-
-      submitBtn.disabled = true;
-      submitBtn.textContent = 'Antwortvorschläge werden erzeugt …';
-    });
-  }
-
-  renumberBlocks();
-
-  // Publishing (nur wenn Buttons existieren)
-  const publishBtn = document.getElementById('publish-btn');
-  const forceBtn = document.getElementById('publish-force-btn');
-  const statusEl = document.getElementById('publish-status');
-  const replyTa = document.getElementById('reply_0');
-  const ridHidden = document.getElementById('rid-hidden');
-
-  if (publishBtn && statusEl && replyTa && ridHidden) {
-    const rid = (ridHidden.value || '').trim();
-
-    async function publish(force=false) {
-      const replyText = (replyTa.value || '').trim();
-      if (!rid) {
-        statusEl.textContent = 'Fehler: rid fehlt.';
-        return;
-      }
-      if (!replyText) {
-        statusEl.textContent = 'Keine Antwort vorhanden.';
-        return;
-      }
-
-      const ok = confirm(force
-        ? 'Achtung: vorhandene Google-Antwort wird überschrieben. Wirklich veröffentlichen?'
-        : 'Antwort wirklich auf Google veröffentlichen?'
-      );
-      if (!ok) return;
-
-      publishBtn.disabled = true;
-      if (forceBtn) forceBtn.disabled = true;
-      statusEl.textContent = 'Veröffentliche …';
-
-      try {
-        const res = await fetch('/api/publish_reply', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ rid, replyText, force })
-        });
-
-        const data = await res.json().catch(() => ({}));
-
-        if (res.status === 409 && data && data.error === 'already_replied') {
-          statusEl.textContent = 'Es existiert bereits eine Antwort. Du kannst überschreiben.';
-          if (forceBtn) forceBtn.style.display = 'inline-flex';
-          return;
-        }
-
-        if (!res.ok) {
-          statusEl.textContent = 'Fehler: ' + (data.detail || data.error || (res.status + ' ' + res.statusText));
-          return;
-        }
-
-        statusEl.textContent = 'Veröffentlicht.';
-        if (forceBtn) forceBtn.style.display = 'none';
-      } catch (e) {
-        statusEl.textContent = 'Netzwerkfehler: ' + (e && e.message ? e.message : String(e));
-      } finally {
-        publishBtn.disabled = false;
-        if (forceBtn) forceBtn.disabled = false;
-      }
+        # Publishing-Context
+        "accountId": account_id,
+        "locationId": location_id,
+        "reviewId": review_id,
+        "storeCode": store_code,
+        "locationTitle": location_title,
     }
 
-    publishBtn.addEventListener('click', () => publish(false));
-    if (forceBtn) forceBtn.addEventListener('click', () => publish(true));
-  }
-});
-</script>
-</body>
-</html>
+    rid = prefill_insert(payload)
+    resp = jsonify({"rid": rid})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.post("/api/publish_reply")
+def api_publish_reply():
+    if not ENABLE_PUBLISH:
+        abort(404)
+
+    _require_basic_auth_if_configured()
+
+    data = request.get_json(silent=True) or {}
+    rid = (data.get("rid") or "").strip()
+    reply_text = (data.get("replyText") or "").strip()
+    force = bool(data.get("force"))
+
+    if not rid or not reply_text:
+        return jsonify({"error": "missing rid/replyText"}), 400
+    if len(reply_text) > 4096:
+        return jsonify({"error": "reply too long"}), 400
+
+    payload = prefill_get(rid)
+    if not payload:
+        return jsonify({"error": "rid not found/expired"}), 404
+
+    account_id = (payload.get("accountId") or "").strip()
+    location_id = (payload.get("locationId") or "").strip()
+    review_id = (payload.get("reviewId") or "").strip()
+
+    if not (account_id and location_id and review_id):
+        return jsonify({"error": "rid payload missing accountId/locationId/reviewId"}), 400
+
+    name = f"accounts/{account_id}/locations/{location_id}/reviews/{review_id}"
+
+    if not force:
+        try:
+            review_obj = _gbp_get_review(name)
+            existing = ((review_obj.get("reviewReply") or {}).get("comment") or "").strip()
+            if existing:
+                return jsonify({"error": "already_replied"}), 409
+        except Exception as e:
+            return jsonify({"error": "precheck_failed", "detail": str(e)}), 502
+
+    try:
+        rr = _gbp_update_reply(name, reply_text)
+        return jsonify({"ok": True, "reviewReply": rr})
+    except Exception as e:
+        return jsonify({"error": "publish_failed", "detail": str(e)}), 502
+
+
+@app.route("/", methods=["GET"])
+def index():
+    rid = (request.args.get("rid") or "").strip()
+
+    values = {
+        "selectedTone": "friendly",
+        "corporateSignature": "Ihr NOVOTERGUM Team",
+        "contactEmail": "",
+        "languageMode": "de",
+    }
+    reviews = [{}]
+    publish_ready = False
+
+    if rid:
+        payload = prefill_get(rid)
+        if payload:
+            publish_ready = _publish_ready_from_payload(payload)
+            reviews = [{
+                "review": payload.get("review") or "",
+                "rating": payload.get("rating") or "",
+                "reviewType": "",
+                "salutation": "",
+            }]
+
+    return render_template(
+        "index.html",
+        values=values,
+        reviews=reviews,
+        replies=None,
+        rid=rid,
+        publish_enabled=ENABLE_PUBLISH,
+        publish_ready=publish_ready,
+    )
+
+
+@app.route("/generate", methods=["POST"])
+def generate():
+    form = request.form
+    rid = (form.get("rid") or "").strip()
+    payload = prefill_get(rid) if rid else None
+    publish_ready = _publish_ready_from_payload(payload) if payload else False
+
+    if rid:
+        try:
+            prefill_mark_used(rid)
+        except Exception as e:
+            app.logger.warning("Prefill mark_used failed: %s", e)
+
+    values = {
+        "selectedTone": form.get("selectedTone", "friendly"),
+        "corporateSignature": form.get("corporateSignature", "Ihr NOVOTERGUM Team"),
+        "contactEmail": (form.get("contactEmail", "") or "").strip(),
+        "languageMode": form.get("languageMode", "de"),
+    }
+
+    reviews_list = [t.strip() for t in form.getlist("review")]
+    ratings_list = form.getlist("rating")
+    types_list = form.getlist("reviewType")
+    sal_list = form.getlist("salutation")
+
+    reviews_list = reviews_list[:MAX_REVIEWS]
+    ratings_list = ratings_list[:MAX_REVIEWS]
+    types_list = types_list[:MAX_REVIEWS]
+    sal_list = sal_list[:MAX_REVIEWS]
+
+    replies = []
+    review_blocks = []
+
+    base = {
+        "selectedTone": values["selectedTone"],
+        "languageMode": values["languageMode"],
+        "corporateSignature": values["corporateSignature"],
+        "contactEmail": values["contactEmail"],
+    }
+
+    for idx, review_text in enumerate(reviews_list):
+        rating_raw = ratings_list[idx] if idx < len(ratings_list) else ""
+        rtype = types_list[idx] if idx < len(types_list) else ""
+        sal = sal_list[idx] if idx < len(sal_list) else ""
+
+        review_blocks.append(
+            {"review": review_text, "rating": rating_raw, "reviewType": rtype, "salutation": sal}
+        )
+
+        if not review_text:
+            continue
+
+        data = dict(base)
+        data["review"] = review_text
+        data["rating"] = rating_raw
+        data["reviewType"] = rtype
+        data["salutation"] = sal
+
+        prompt = build_prompt(data)
+
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        raw_reply = (response.choices[0].message.content or "").strip()
+        public_answer, insights = split_public_and_insights(raw_reply)
+
+        # Schutz gegen doppelte Signatur am Ende (falls Prompt+Model doppelt)
+        public_answer = _dedupe_trailing_signature(public_answer, values["corporateSignature"])
+
+        replies.append({"review": review_text, "reply": public_answer, "insights": insights})
+
+        if insights and MAKE_WEBHOOK_URL:
+            try:
+                payload_out = {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "review_text": review_text,
+                    "rating_input": rating_raw,
+                    "tone": values["selectedTone"],
+                    "language": values["languageMode"],
+                    "insights": insights,
+                }
+                data_bytes = json.dumps(payload_out).encode("utf-8")
+                req = urlrequest.Request(
+                    MAKE_WEBHOOK_URL,
+                    data=data_bytes,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                urlrequest.urlopen(req, timeout=3)
+            except Exception as e:
+                app.logger.warning("Make webhook failed: %s", e)
+
+    if not review_blocks:
+        review_blocks = [{}]
+
+    # rid NICHT leeren
+    return render_template(
+        "index.html",
+        values=values,
+        reviews=review_blocks,
+        replies=replies,
+        rid=rid,
+        publish_enabled=ENABLE_PUBLISH,
+        publish_ready=publish_ready and (len(replies) == 1),
+    )
+
+
+if DATABASE_URL:
+    try:
+        prefill_init()
+    except Exception as e:
+        app.logger.error("Prefill init failed: %s", e)
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", "8080"))
+    app.run(host="0.0.0.0", port=port)
