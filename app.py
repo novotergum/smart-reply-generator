@@ -1,10 +1,12 @@
 import os
+import sys
 import json
 import time
 import secrets
 import re
 from datetime import datetime, timezone
 from urllib import request as urlrequest
+from typing import Dict, Any, Optional, List
 
 import psycopg2
 from flask import Flask, render_template, request, jsonify, abort
@@ -19,13 +21,107 @@ app = Flask(__name__)
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAX_REVIEWS = 10
-MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "").strip()
+MAKE_WEBHOOK_URL = (os.getenv("MAKE_WEBHOOK_URL") or "").strip()
 
-PREFILL_SECRET = os.getenv("PREFILL_SECRET", "").strip()
+PREFILL_SECRET = (os.getenv("PREFILL_SECRET") or "").strip()
 PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))  # 3 Tage
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+DATABASE_URL = (os.getenv("DATABASE_URL") or "").strip()
+
+# --- Review-Normalisierung (verhindert doppelten Abbinder + entfernt "(Translated by Google)") ---
+_TRANSLATION_MARKERS = [
+    "\n\n(Translated by Google)\n",
+    "\n\n(Übersetzt von Google)\n",
+]
+
+_RE_FOOTER_LINE = re.compile(r"^\s*—\s+.+$")
 
 
+def _strip_translation_block(text: str) -> str:
+    if not text:
+        return text
+    for marker in _TRANSLATION_MARKERS:
+        if marker in text:
+            text = text.split(marker, 1)[0].strip()
+    return text
+
+
+def _normalize_footer_block(lines: List[str]) -> List[str]:
+    """
+    If the review ends with 1+ footer lines starting with '—', keep only ONE footer line (the last one),
+    and drop any additional footer lines (including duplicates).
+    """
+    if not lines:
+        return lines
+
+    # trim trailing empties
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    # find trailing footer block
+    i = len(lines) - 1
+    footer_idxs = []
+    while i >= 0 and _RE_FOOTER_LINE.match(lines[i].strip() or ""):
+        footer_idxs.append(i)
+        i -= 1
+
+    if not footer_idxs:
+        return lines
+
+    footer_idxs.sort()
+    last_footer = lines[footer_idxs[-1]].strip()
+
+    # remove all footer lines, then append only the last one
+    kept = [ln.rstrip() for idx, ln in enumerate(lines) if idx not in set(footer_idxs)]
+    while kept and not kept[-1].strip():
+        kept.pop()
+    kept.append(last_footer)
+    return kept
+
+
+def normalize_review_text(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+
+    text = _strip_translation_block(text)
+    lines = [ln.rstrip() for ln in text.splitlines()]
+    lines = _normalize_footer_block(lines)
+    return "\n".join(lines).strip()
+
+
+def _compose_review_text(review: str, reviewer: str = "", reviewed_at: str = "") -> str:
+    """
+    Produces: "<comment>\n— <reviewer>, am <reviewed_at>"
+    But avoids adding the footer if it's already present (and dedupes if present multiple times).
+    """
+    review = normalize_review_text(review)
+
+    reviewer = re.sub(r"\s+", " ", (reviewer or "").strip())
+    reviewed_at = re.sub(r"\s+", " ", (reviewed_at or "").strip())
+
+    if not review:
+        return ""
+
+    # If there is already a footer at the end, do NOT append a second one.
+    lines = review.splitlines()
+    if lines and _RE_FOOTER_LINE.match(lines[-1].strip() or ""):
+        return review
+
+    # No footer present; append only if we have data.
+    if not reviewer and not reviewed_at:
+        return review
+
+    suffix_parts = []
+    if reviewer:
+        suffix_parts.append(reviewer)
+    if reviewed_at:
+        suffix_parts.append(f"am {reviewed_at}")
+
+    suffix = ", ".join(suffix_parts)
+    return f"{review}\n— {suffix}"
+
+
+# --- DB ---
 def pg_connect():
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL missing (add Railway Postgres)")
@@ -50,11 +146,9 @@ def prefill_init():
                 )
                 """
             )
-            # Falls Tabelle schon existiert (ältere Version), fehlende Spalten nachziehen
+            # Backfill columns if table existed before
             cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS used_at BIGINT;")
-            cur.execute(
-                "ALTER TABLE prefill ADD COLUMN IF NOT EXISTS used_count INT NOT NULL DEFAULT 0;"
-            )
+            cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS used_count INT NOT NULL DEFAULT 0;")
         conn.commit()
 
 
@@ -64,85 +158,6 @@ def prefill_cleanup():
         with conn.cursor() as cur:
             cur.execute("DELETE FROM prefill WHERE created_at < %s", (cutoff,))
         conn.commit()
-
-
-def _strip_trailing_meta_lines(text: str) -> str:
-    """
-    Entfernt am Ende des Textes typische Abbinder-Zeilen wie:
-    '— Name, am 18.12.2025 14:39:53'
-    ' - Name, am ...'
-    und auch doppelte Wiederholungen davon.
-    """
-    text = (text or "").strip()
-    if not text:
-        return ""
-
-    # Leere Zeilen entfernen, aber innere Zeilen beibehalten
-    lines = [ln.rstrip() for ln in text.splitlines()]
-    # trim trailing empty lines
-    while lines and not lines[-1].strip():
-        lines.pop()
-
-    # Heuristik: Meta-Zeile startet mit — oder - und enthält "am " oder ein Datumsformat
-    date_hint = re.compile(r"\b\d{1,2}\.\d{1,2}\.\d{2,4}\b")
-    def is_meta_line(ln: str) -> bool:
-        s = ln.strip()
-        if not s:
-            return False
-        if not re.match(r"^[—-]\s+", s):
-            return False
-        if " am " in s:
-            return True
-        if date_hint.search(s):
-            return True
-        return False
-
-    # Entferne alle Meta-Zeilen am Ende (auch mehrfach)
-    while lines and is_meta_line(lines[-1]):
-        lines.pop()
-        while lines and not lines[-1].strip():
-            lines.pop()
-
-    return "\n".join([ln for ln in lines]).strip()
-
-
-def _compose_review_text(review_raw: str, reviewer: str = "", reviewed_at: str = "") -> str:
-    """
-    Baut den sichtbaren Text genau einmal zusammen:
-    <review>
-    — <reviewer>, am <reviewed_at>
-
-    Verhindert zuverlässig doppelte Abbinder, auch wenn review_raw schon einen hat.
-    """
-    review_raw = (review_raw or "").strip()
-    reviewer = (reviewer or "").strip()
-    reviewed_at = (reviewed_at or "").strip()
-
-    # Sanitization: keine Zeilenumbrüche in Meta-Feldern
-    if reviewer:
-        reviewer = reviewer.splitlines()[0].strip()
-    if reviewed_at:
-        reviewed_at = reviewed_at.splitlines()[0].strip()
-
-    # Wenn keine Metadaten vorhanden sind, einfach raw zurückgeben
-    if not reviewer and not reviewed_at:
-        return review_raw
-
-    # Sicherheit: falls raw versehentlich comment_full enthält -> Meta entfernen
-    base = _strip_trailing_meta_lines(review_raw)
-
-    suffix_parts = []
-    if reviewer:
-        suffix_parts.append(reviewer)
-    if reviewed_at:
-        suffix_parts.append(f"am {reviewed_at}")
-
-    suffix = ", ".join([p for p in suffix_parts if p]).strip()
-    meta_line = f"— {suffix}".strip()
-
-    if base:
-        return f"{base}\n{meta_line}"
-    return meta_line
 
 
 def prefill_insert(payload: dict) -> str:
@@ -162,7 +177,6 @@ def prefill_insert(payload: dict) -> str:
 def prefill_get(rid: str):
     if not rid:
         return None
-    # Cleanup nicht zwingend bei jedem GET, aber ok bei eurem Traffic
     prefill_cleanup()
     with pg_connect() as conn:
         with conn.cursor() as cur:
@@ -170,14 +184,7 @@ def prefill_get(rid: str):
             row = cur.fetchone()
             if not row:
                 return None
-            payload = row[0]
-            # je nach psycopg2-config kann JSONB als dict oder str kommen
-            if isinstance(payload, str):
-                try:
-                    payload = json.loads(payload)
-                except Exception:
-                    return None
-            return payload
+            return row[0]
 
 
 def prefill_mark_used(rid: str):
@@ -193,6 +200,7 @@ def prefill_mark_used(rid: str):
         conn.commit()
 
 
+# --- API ---
 @app.post("/api/prefill")
 def api_prefill_create():
     if not PREFILL_SECRET:
@@ -202,13 +210,8 @@ def api_prefill_create():
 
     data = request.get_json(silent=True) or {}
 
-    # Input: review soll RAW sein (ohne Abbinder).
-    # Falls Make/Zapier aber versehentlich comment_full schickt, fangen wir es ab.
-    review_in = (data.get("review") or "").strip()
-    comment_full = (data.get("comment_full") or "").strip()
-    if not review_in and comment_full:
-        review_in = comment_full
-
+    # Flexibel: akzeptiere "review" ODER (Make/GBP) "comment_full"/"comment"
+    review_in = (data.get("review") or data.get("comment_full") or data.get("comment") or "").strip()
     rating_raw = data.get("rating")
 
     reviewer = (data.get("reviewer") or "").strip()
@@ -227,20 +230,17 @@ def api_prefill_create():
         except Exception:
             return jsonify({"error": "invalid rating"}), 400
 
-    # Wichtig: Wir speichern RAW + Meta separat (nicht den zusammengesetzten Text)
-    review_raw = _strip_trailing_meta_lines(review_in)
+    # Wichtig: hier entsteht der finale Text für das UI (ohne doppelten Abbinder)
+    review_full = _compose_review_text(review_in, reviewer=reviewer, reviewed_at=reviewed_at)
 
     payload = {
-        "review_raw": review_raw,
+        "review": review_full,
         "rating": rating,
         "reviewer": reviewer,
         "reviewed_at": reviewed_at,
-        # optional: falls du es später brauchst (nicht fürs UI)
-        "comment_full": comment_full or "",
     }
 
     rid = prefill_insert(payload)
-
     resp = jsonify({"rid": rid})
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -261,25 +261,14 @@ def index():
     if rid:
         payload = prefill_get(rid)
         if payload:
-            # Neue Struktur bevorzugen
-            if payload.get("review_raw") is not None:
-                review_text = _compose_review_text(
-                    payload.get("review_raw") or "",
-                    reviewer=payload.get("reviewer") or "",
-                    reviewed_at=payload.get("reviewed_at") or "",
-                )
-            else:
-                # Legacy: alte Einträge hatten ggf. nur "review"
-                review_text = (payload.get("review") or "").strip()
-
-            reviews = [
-                {
-                    "review": review_text,
-                    "rating": payload.get("rating") or "",
-                    "reviewType": "",
-                    "salutation": "",
-                }
-            ]
+            # zusätzliche Absicherung: alte/doppelte Daten beim Anzeigen normalisieren
+            review_text = normalize_review_text(payload.get("review") or "")
+            reviews = [{
+                "review": review_text,
+                "rating": payload.get("rating") or "",
+                "reviewType": "",
+                "salutation": "",
+            }]
 
     return render_template("index.html", values=values, reviews=reviews, replies=None, rid=rid)
 
@@ -327,15 +316,18 @@ def generate():
         rtype = types_list[idx] if idx < len(types_list) else ""
         sal = sal_list[idx] if idx < len(sal_list) else ""
 
+        # Normalisieren, damit auch manuell eingefügte doppel-Abbinder sauber werden
+        review_text_clean = normalize_review_text(review_text)
+
         review_blocks.append(
-            {"review": review_text, "rating": rating_raw, "reviewType": rtype, "salutation": sal}
+            {"review": review_text_clean, "rating": rating_raw, "reviewType": rtype, "salutation": sal}
         )
 
-        if not review_text:
+        if not review_text_clean:
             continue
 
         data = dict(base)
-        data["review"] = review_text
+        data["review"] = review_text_clean
         data["rating"] = rating_raw
         data["reviewType"] = rtype
         data["salutation"] = sal
@@ -349,19 +341,19 @@ def generate():
         raw_reply = (response.choices[0].message.content or "").strip()
         public_answer, insights = split_public_and_insights(raw_reply)
 
-        replies.append({"review": review_text, "reply": public_answer, "insights": insights})
+        replies.append({"review": review_text_clean, "reply": public_answer, "insights": insights})
 
         if insights and MAKE_WEBHOOK_URL:
             try:
                 payload = {
                     "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "review_text": review_text,
+                    "review_text": review_text_clean,
                     "rating_input": rating_raw,
                     "tone": values["selectedTone"],
                     "language": values["languageMode"],
                     "insights": insights,
                 }
-                data_bytes = json.dumps(payload).encode("utf-8")
+                data_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                 req = urlrequest.Request(
                     MAKE_WEBHOOK_URL,
                     data=data_bytes,
