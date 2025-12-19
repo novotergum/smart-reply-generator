@@ -223,8 +223,8 @@ def api_prefill():
 def api_debug_prefill():
     """
     Debug-Endpoint (nur intern): zeigt, was in der DB zum rid steht.
-    Hinweis: CORS-frei testen, indem du den iFrame-Context in DevTools auswählst
-    oder die Smart-Reply-URL direkt öffnest.
+    Hinweis: CORS-frei testen, indem du die Smart-Reply-URL direkt öffnest
+    (same-origin in DevTools).
     """
     if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
         abort(401)
@@ -237,7 +237,6 @@ def api_debug_prefill():
     p = row.get("payload") or {}
     ready, missing = compute_publish_ready(p)
 
-    # Keine Volltexte ausgeben (nur keys & publishing relevant)
     return jsonify({
         "ok": True,
         "rid": rid,
@@ -268,7 +267,6 @@ def index():
         if row and row.get("payload"):
             p = row["payload"]
 
-            # publish_ready korrekt aus dem Prefill-Payload aus der DB berechnen
             publish_ready, publish_missing = compute_publish_ready(p)
 
             reviews = [
@@ -282,7 +280,6 @@ def index():
             if row.get("generated"):
                 replies = (row["generated"] or {}).get("replies")
 
-    # Standardwerte für values, damit index.html korrekt rendert
     values = {
         "selectedTone": "friendly",
         "corporateSignature": "Ihr NOVOTERGUM Team",
@@ -300,10 +297,23 @@ def index():
         publish_enabled=ENABLE_PUBLISH,
         publish_ui_enabled=PUBLISH_UI_ENABLED,
 
-        # NEU:
         publish_ready=publish_ready,
         publish_missing=publish_missing,
     )
+
+
+def _first_non_empty_pairs(reviews: List[str], ratings: List[str]) -> List[Tuple[str, str]]:
+    """
+    Normalisiert Reviews/Ratings zu Paaren (review_text, rating_text) und filtert leere reviews raus.
+    """
+    pairs: List[Tuple[str, str]] = []
+    for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
+        rev_txt = (rev or "").strip()
+        if not rev_txt:
+            continue
+        rat = (ratings[idx] if idx < len(ratings) else "") or ""
+        pairs.append((rev_txt, str(rat)))
+    return pairs
 
 
 @app.post("/generate")
@@ -319,12 +329,18 @@ def generate():
         "languageMode": request.form.get("languageMode", "de"),
     }
 
-    replies = []
-    for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
-        if not (rev or "").strip():
-            continue
+    pairs = _first_non_empty_pairs(reviews, ratings)
 
-        rating = ratings[idx] if idx < len(ratings) else ""
+    # --------------------------------------------------------
+    # FIX: rid steht für genau 1 Review → nur das erste nicht-leere Paar verarbeiten
+    # --------------------------------------------------------
+    if rid and pairs:
+        if len(pairs) > 1:
+            app.logger.warning("generate rid=%s received %s reviews; forcing single-review mode", rid, len(pairs))
+        pairs = [pairs[0]]
+
+    replies = []
+    for (rev, rating) in pairs:
         prompt = build_prompt(
             {
                 "review": rev,
