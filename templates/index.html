@@ -435,13 +435,13 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   // -------------------------
-  // Publish Button
+  // Publish Button (Variante A: Publish-Passwort)
   // -------------------------
-  async function getPrefillSecretOnce() {
-    const key = "prefillSecret_v1";
+  async function getPublishPasswordOnce() {
+    const key = "publishPassword_v1";
     let s = sessionStorage.getItem(key) || "";
     if (s) return s;
-    s = prompt("X-Prefill-Secret (nur intern):") || "";
+    s = prompt("Publish-Passwort (nur intern):") || "";
     s = s.trim();
     if (s) sessionStorage.setItem(key, s);
     return s;
@@ -453,12 +453,12 @@ document.addEventListener('DOMContentLoaded', function () {
     return s.slice(0, maxLen) + " …";
   }
 
-  async function doPublish({ rid, secret, reply, overwrite }) {
+  async function doPublish({ rid, password, reply, overwrite }) {
     const res = await fetch(`/api/publish?rid=${encodeURIComponent(rid)}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Prefill-Secret": secret
+        "X-Publish-Password": password
       },
       body: JSON.stringify({ rid, reply, overwrite })
     });
@@ -489,9 +489,9 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
-        const secret = await getPrefillSecretOnce();
-        if (!secret) {
-          alert("Kein Secret eingegeben.");
+        const password = await getPublishPasswordOnce();
+        if (!password) {
+          alert("Kein Publish-Passwort eingegeben.");
           return;
         }
 
@@ -499,7 +499,7 @@ document.addEventListener('DOMContentLoaded', function () {
         if (publishStatus) publishStatus.textContent = "Publishing läuft …";
 
         // 1) Versuch ohne overwrite
-        let out = await doPublish({ rid, secret, reply, overwrite: false });
+        let out = await doPublish({ rid, password, reply, overwrite: false });
 
         // 409 = already_replied → UX: Hinweis + Retry mit overwrite
         if (out.res.status === 409 && out.j && out.j.error === "already_replied") {
@@ -520,7 +520,7 @@ document.addEventListener('DOMContentLoaded', function () {
           }
 
           if (publishStatus) publishStatus.textContent = "Überschreiben läuft …";
-          out = await doPublish({ rid, secret, reply, overwrite: true });
+          out = await doPublish({ rid, password, reply, overwrite: true });
         }
 
         if (!out.res.ok) {
