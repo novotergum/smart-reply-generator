@@ -27,160 +27,66 @@
       border-radius:var(--radius);
       box-shadow:var(--shadow);
     }
-    h1{
-      font-size:22px;
-      margin:0 0 4px;
-    }
-    .lead{
-      margin:0 0 20px;
-      font-size:14px;
-      color:var(--muted);
-    }
+    h1{font-size:22px;margin:0 0 4px;}
+    .lead{margin:0 0 20px;font-size:14px;color:var(--muted);}
     form{margin:0;}
-    .field{
-      display:flex;
-      flex-direction:column;
-      gap:6px;
-      margin-bottom:12px;
-    }
-    label{
-      font-size:13px;
-      color:var(--muted);
-    }
+    .field{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
+    label{font-size:13px;color:var(--muted);}
     textarea,input,select{
-      font:inherit;
-      padding:10px 12px;
-      border-radius:10px;
-      border:1px solid #d1d5db;
-      background:#f9fafb;
+      font:inherit;padding:10px 12px;border-radius:10px;
+      border:1px solid #d1d5db;background:#f9fafb;
     }
     textarea{resize:vertical; min-height:120px;}
-    select{background-color:#f9fafb;}
     textarea:focus,input:focus,select:focus{
       outline:2px solid rgba(255,102,0,.35);
-      border-color:#fb923c;
-      background:#ffffff;
+      border-color:#fb923c;background:#ffffff;
     }
-    .hint{
-      font-size:11px;
-      color:var(--muted);
-      margin:2px 0 0;
-    }
+    .hint{font-size:11px;color:var(--muted);margin:2px 0 0;}
 
-    .review-block{
-      padding:16px 0 18px;
-      border-bottom:1px dashed #e5e7eb;
-    }
-    .review-block:last-child{
-      border-bottom:none;
-    }
+    .review-block{padding:16px 0 18px;border-bottom:1px dashed #e5e7eb;}
+    .review-block:last-child{border-bottom:none;}
     .review-block-header{
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      margin-bottom:4px;
-      gap:10px;
+      display:flex;align-items:center;justify-content:space-between;
+      margin-bottom:4px;gap:10px;
     }
-    .review-heading{
-      font-size:15px;
-      font-weight:600;
-      margin:0;
-    }
+    .review-heading{font-size:15px;font-weight:600;margin:0;}
     .remove-review-btn{
-      border-radius:999px;
-      border:0;
-      cursor:pointer;
-      font-size:11px;
-      padding:4px 10px;
-      background:#fee2e2;
-      color:#b91c1c;
+      border-radius:999px;border:0;cursor:pointer;font-size:11px;
+      padding:4px 10px;background:#fee2e2;color:#b91c1c;
     }
-    .remove-review-btn:hover{
-      background:#fecaca;
-    }
+    .remove-review-btn:hover{background:#fecaca;}
 
     .btn-primary,.btn-secondary{
-      border-radius:999px;
-      border:0;
-      cursor:pointer;
-      font-size:14px;
-      padding:10px 18px;
-      display:inline-flex;
-      align-items:center;
-      gap:6px;
+      border-radius:999px;border:0;cursor:pointer;font-size:14px;
+      padding:10px 18px;display:inline-flex;align-items:center;gap:6px;
     }
     .btn-primary{
       background:linear-gradient(180deg,var(--brand),var(--brand-700));
-      color:#fff;
-      box-shadow:0 10px 25px rgba(249,115,22,.45);
+      color:#fff;box-shadow:0 10px 25px rgba(249,115,22,.45);
     }
     .btn-primary:hover{filter:brightness(1.03);}
-    .btn-primary[disabled]{
-      opacity:.6;
-      cursor:not-allowed;
-      box-shadow:none;
-    }
+    .btn-primary[disabled]{opacity:.6;cursor:not-allowed;box-shadow:none;}
     .btn-secondary{
-      background:#f3f4f6;
-      color:var(--ink);
-      border:1px solid #e5e7eb;
+      background:#f3f4f6;color:var(--ink);border:1px solid #e5e7eb;
     }
-    .btn-secondary:hover{
-      background:#e5e7f3;
-    }
-    .actions{
-      margin-top:16px;
-    }
-    .grid{
-      display:grid;
-      grid-template-columns:1fr;
-      gap:10px 20px;
-      margin-top:10px;
-    }
-    @media (min-width:720px){
-      .grid{grid-template-columns:1.1fr 0.9fr;}
-    }
-    .results{
-      margin-top:28px;
-      padding-top:18px;
-      border-top:1px solid #e5e7eb;
-    }
+    .btn-secondary:hover{background:#e5e7f3;}
+
+    .actions{margin-top:16px;}
+    .grid{display:grid;grid-template-columns:1fr;gap:10px 20px;margin-top:10px;}
+    @media (min-width:720px){.grid{grid-template-columns:1.1fr 0.9fr;}}
+    .results{margin-top:28px;padding-top:18px;border-top:1px solid #e5e7eb;}
     .reply-card{
-      margin-top:14px;
-      padding:14px 12px 14px;
-      border-radius:10px;
-      background:#f9fafb;
-      border:1px solid #e5e7eb;
+      margin-top:14px;padding:14px 12px;border-radius:10px;
+      background:#f9fafb;border:1px solid #e5e7eb;
     }
-    .reply-card h3{
-      margin:0 0 6px;
-      font-size:14px;
-    }
-    .original-label{
-      margin:4px 0 0;
-      font-size:12px;
-      color:var(--muted);
-    }
-    .original-review{
-      margin:4px 0 8px;
-      font-size:13px;
-      white-space:pre-wrap;
-    }
-    details{
-      margin-top:8px;
-      font-size:12px;
-    }
-    details summary{
-      cursor:pointer;
-      color:var(--muted);
-    }
+    .reply-card h3{margin:0 0 6px;font-size:14px;}
+    .original-label{margin:4px 0 0;font-size:12px;color:var(--muted);}
+    .original-review{margin:4px 0 8px;font-size:13px;white-space:pre-wrap;}
+    details{margin-top:8px;font-size:12px;}
+    details summary{cursor:pointer;color:var(--muted);}
     details pre{
-      margin-top:6px;
-      background:#111827;
-      color:#f9fafb;
-      padding:8px 10px;
-      border-radius:8px;
-      overflow-x:auto;
+      margin-top:6px;background:#111827;color:#f9fafb;padding:8px 10px;
+      border-radius:8px;overflow-x:auto;
     }
   </style>
 </head>
@@ -202,7 +108,6 @@
       <div class="review-block">
         <div class="review-block-header">
           <p class="review-heading">Bewertung {{ loop.index }}</p>
-
           {% if not prefill_mode %}
             <button type="button" class="remove-review-btn">Entfernen</button>
           {% endif %}
@@ -219,8 +124,7 @@
           <select id="rating_{{ loop.index0 }}" name="rating">
             <option value="">– bitte auswählen –</option>
             {% for n in range(1,6) %}
-              <option value="{{ n }}"
-                      {% if (r.rating or '') == n|string %}selected{% endif %}>
+              <option value="{{ n }}" {% if (r.rating or '') == n|string %}selected{% endif %}>
                 {{ n }} Stern{% if n > 1 %}e{% endif %}
               </option>
             {% endfor %}
@@ -320,7 +224,9 @@
             <button type="button" class="btn-secondary" id="publish-btn">
               Auf Google veröffentlichen
             </button>
-            <span class="hint" id="publish-status" style="margin:0;"></span>
+            <span class="hint" id="publish-status" style="margin:0;">
+              {% if publish_dry_run %}Dry-Run ist aktiv{% endif %}
+            </span>
           </div>
         {% else %}
           <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
@@ -328,8 +234,7 @@
               Auf Google veröffentlichen (nicht bereit)
             </button>
             <span class="hint" style="margin:0;">
-              publish_ready=false – es fehlen:
-              <b>{{ publish_missing | join(', ') }}</b>
+              publish_ready=false – es fehlen: <b>{{ publish_missing | join(', ') }}</b>
             </span>
           </div>
         {% endif %}
@@ -353,6 +258,9 @@ document.addEventListener('DOMContentLoaded', function () {
   const addBtn     = document.getElementById('add-review-btn');
   const form       = document.querySelector('form');
   const submitBtn  = document.getElementById('submit-btn');
+
+  const publishBtn = document.getElementById('publish-btn');
+  const publishStatus = document.getElementById('publish-status');
 
   const MAX_REVIEWS  = 10;
   const DAILY_LIMIT  = 50;
@@ -467,9 +375,7 @@ document.addEventListener('DOMContentLoaded', function () {
         const blocks = container.querySelectorAll('.review-block');
         blocks.forEach(function (block) {
           const textarea = block.querySelector('textarea[name="review"]');
-          if (textarea && textarea.value.trim().length > 0) {
-            creditsThisSubmit += 1;
-          }
+          if (textarea && textarea.value.trim().length > 0) creditsThisSubmit += 1;
         });
       }
 
@@ -499,60 +405,68 @@ document.addEventListener('DOMContentLoaded', function () {
     });
   }
 
-  // ---------- Publish (Dry-Run) ----------
-  const publishBtn = document.getElementById('publish-btn');
-  const publishStatus = document.getElementById('publish-status');
+  // -------------------------
+  // Publish Button
+  // -------------------------
+  async function getPrefillSecretOnce() {
+    const key = "prefillSecret_v1";
+    let s = sessionStorage.getItem(key) || "";
+    if (s) return s;
+    s = prompt("X-Prefill-Secret (nur intern):") || "";
+    s = s.trim();
+    if (s) sessionStorage.setItem(key, s);
+    return s;
+  }
 
   if (publishBtn) {
     publishBtn.addEventListener('click', async function () {
       try {
-        const ridInput = document.querySelector('input[name="rid"]');
-        const rid = ridInput ? ridInput.value.trim() : '';
+        const rid = new URLSearchParams(window.location.search).get("rid") || "";
         if (!rid) {
-          alert('Kein rid gefunden.');
+          alert("Kein rid gefunden.");
           return;
         }
 
-        const secret = prompt('X-Prefill-Secret eingeben (nur intern):');
-        if (!secret) return;
+        if (!confirm("Wirklich auf Google veröffentlichen? Dieser Schritt ist nicht rückgängig zu machen.")) {
+          return;
+        }
 
-        const replyBox = document.getElementById('reply_0');
-        const replyText = replyBox ? replyBox.value.trim() : '';
-        if (!replyText) {
-          alert('Keine Antwort gefunden (reply_0 ist leer).');
+        const secret = await getPrefillSecretOnce();
+        if (!secret) {
+          alert("Kein Secret eingegeben.");
           return;
         }
 
         publishBtn.disabled = true;
-        if (publishStatus) publishStatus.textContent = 'Sende Publish-Test …';
+        if (publishStatus) publishStatus.textContent = "Publishing läuft …";
 
-        const res = await fetch('/api/publish?rid=' + encodeURIComponent(rid), {
-          method: 'POST',
+        const res = await fetch(`/api/publish?rid=${encodeURIComponent(rid)}`, {
+          method: "POST",
           headers: {
-            'Content-Type': 'application/json',
-            'X-Prefill-Secret': secret
+            "Content-Type": "application/json",
+            "X-Prefill-Secret": secret
           },
-          body: JSON.stringify({ rid, reply: replyText })
+          body: JSON.stringify({ rid })
         });
 
         const txt = await res.text();
         let j = null;
-        try { j = JSON.parse(txt); } catch (e) {}
+        try { j = JSON.parse(txt); } catch {}
 
         if (!res.ok) {
           const msg = (j && (j.error || j.message)) ? (j.error || j.message) : txt;
-          if (publishStatus) publishStatus.textContent = 'Fehler: ' + msg;
-          alert('Publish-Test fehlgeschlagen: ' + msg);
-          return;
+          throw new Error(`HTTP ${res.status}: ${msg}`);
         }
 
-        if (publishStatus) {
-          publishStatus.textContent = j && j.dry_run ? 'Dry-Run OK (siehe Railway Logs)' : 'OK';
+        if (j && j.dry_run) {
+          if (publishStatus) publishStatus.textContent = "Dry-Run OK (siehe Railway Logs)";
+        } else {
+          if (publishStatus) publishStatus.textContent = "Veröffentlicht.";
         }
       } catch (e) {
-        const msg = e && e.message ? e.message : String(e);
-        if (publishStatus) publishStatus.textContent = 'Fehler: ' + msg;
-        alert(msg);
+        console.error(e);
+        if (publishStatus) publishStatus.textContent = "Fehler: " + (e.message || e);
+        alert("Fehler beim Publishing:\n\n" + (e.message || e));
       } finally {
         publishBtn.disabled = false;
       }
@@ -562,6 +476,5 @@ document.addEventListener('DOMContentLoaded', function () {
   renumberBlocks();
 });
 </script>
-
 </body>
 </html>
