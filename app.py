@@ -35,18 +35,15 @@ GBP_CLIENT_SECRET = os.getenv("GBP_CLIENT_SECRET", "").strip()
 GBP_REFRESH_TOKEN = os.getenv("GBP_REFRESH_TOKEN", "").strip()
 
 # Feature Flags
-def env_truthy(v: str) -> bool:
-    return str(os.getenv(v, "")).strip().lower() in ("1", "true", "yes", "on")
+def env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in ("1", "true", "yes", "on")
 
 ENABLE_PUBLISH = env_truthy("ENABLE_PUBLISH")
 PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
 PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
 
-# optional: falls du erlauben willst, dass die UI den Reply-Text mitschickt (z.B. wenn textarea editierbar wird)
-ALLOW_CLIENT_REPLY_OVERRIDE = env_truthy("ALLOW_CLIENT_REPLY_OVERRIDE")
-
 # CORS: Komma-separierte Origins, z.B.
-# PUBLISH_ALLOWED_ORIGINS=https://smart-reply-generator-production2.up.railway.app,https://ticket.novotergum.de
+# PUBLISH_ALLOWED_ORIGINS=https://smart-reply...railway.app,https://ticket.novotergum.de
 PUBLISH_ALLOWED_ORIGINS = [
     o.strip() for o in os.getenv("PUBLISH_ALLOWED_ORIGINS", "").split(",") if o.strip()
 ]
@@ -63,14 +60,13 @@ def must_env(name: str) -> str:
 
 def _corsify(resp):
     origin = request.headers.get("Origin", "")
-    # Wenn keine Allowlist gesetzt ist: same-origin (kein Origin Header) funktioniert sowieso.
-    # Wenn Allowlist gesetzt: nur explizit erlauben.
+    # Wenn Allowlist gesetzt: nur erlauben, wenn explizit drin.
     if PUBLISH_ALLOWED_ORIGINS:
         if origin in PUBLISH_ALLOWED_ORIGINS:
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Vary"] = "Origin"
     else:
-        # lockerer Modus (wie bei dir im Screenshot): Origin spiegeln
+        # lockerer Modus: Origin spiegeln (für interne iFrame/Dev-Setups)
         if origin:
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Vary"] = "Origin"
@@ -82,6 +78,9 @@ def _corsify(resp):
 def _json(data, status=200):
     resp = make_response(jsonify(data), status)
     return _corsify(resp)
+
+def _utf8_len(s: str) -> int:
+    return len((s or "").encode("utf-8"))
 
 # --------------------------------------------------------
 # Datenbank
@@ -106,11 +105,9 @@ def prefill_init():
                     generated_at BIGINT
                 )
             """)
-
             # "Migrations" für bestehende Installationen:
             cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS published_at BIGINT")
             cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS publish_result JSONB")
-
         conn.commit()
 
 def prefill_insert(payload: dict) -> str:
@@ -129,16 +126,28 @@ def prefill_get_row(rid: str) -> Optional[dict]:
         return None
     with pg_connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT payload,generated,created_at FROM prefill WHERE rid=%s", (rid,))
+            cur.execute(
+                "SELECT payload,generated,created_at,published_at,publish_result FROM prefill WHERE rid=%s",
+                (rid,),
+            )
             row = cur.fetchone()
             if not row:
                 return None
 
-            payload_raw, generated_raw, created_at = row
+            payload_raw, generated_raw, created_at, published_at, publish_result_raw = row
             payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
             generated = json.loads(generated_raw) if isinstance(generated_raw, str) else generated_raw
+            publish_result = (
+                json.loads(publish_result_raw) if isinstance(publish_result_raw, str) else publish_result_raw
+            )
 
-            return {"payload": payload, "generated": generated, "created_at": created_at}
+            return {
+                "payload": payload,
+                "generated": generated,
+                "created_at": created_at,
+                "published_at": published_at,
+                "publish_result": publish_result,
+            }
 
 def prefill_set_generated(rid: str, data: dict):
     if not rid:
@@ -207,7 +216,7 @@ def compute_publish_ready(payload: Dict[str, Any]) -> Tuple[bool, List[str]]:
     return (len(missing) == 0), missing
 
 # --------------------------------------------------------
-# Google OAuth + Publish Call
+# Google OAuth + Publish Calls
 # --------------------------------------------------------
 
 def get_access_token() -> str:
@@ -242,6 +251,31 @@ def get_access_token() -> str:
     if not j.get("access_token"):
         raise RuntimeError(f"No access_token in token response: {raw}")
     return j["access_token"]
+
+def get_review(account_id: str, location_id: str, review_id: str) -> dict:
+    """
+    Google API: accounts.locations.reviews.get
+    GET https://mybusiness.googleapis.com/v4/{name=accounts/*/locations/*/reviews/*}
+    """
+    access_token = get_access_token()
+    name = f"accounts/{account_id}/locations/{location_id}/reviews/{review_id}"
+    url = f"https://mybusiness.googleapis.com/v4/{name}"
+
+    req = Request(
+        url,
+        method="GET",
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+
+    try:
+        with urlopen(req, timeout=25) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except HTTPError as e:
+        raw = e.read().decode("utf-8", errors="ignore")
+        raise RuntimeError(f"Get review error {e.code}: {raw}")
+    except URLError as e:
+        raise RuntimeError(f"Get review network error: {e}")
 
 def publish_reply(account_id: str, location_id: str, review_id: str, reply_text: str) -> dict:
     """
@@ -360,7 +394,6 @@ def api_publish():
     if request.method == "OPTIONS":
         return _corsify(make_response("", 204))
 
-    # Sicherheitscheck (bei dir bereits so genutzt)
     if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
         return _json({"ok": False, "error": "unauthorized"}, 401)
 
@@ -368,8 +401,9 @@ def api_publish():
         return _json({"ok": False, "error": "publishing disabled"}, 403)
 
     rid = (request.args.get("rid") or "").strip()
+    body = request.get_json(silent=True) or {}
+
     if not rid:
-        body = request.get_json(silent=True) or {}
         rid = (body.get("rid") or "").strip()
 
     if not rid:
@@ -388,43 +422,71 @@ def api_publish():
     if not publish_ready:
         return _json({"ok": False, "error": "publish not ready", "missing": missing}, 400)
 
-    # Reply-Quelle: bevorzugt serverseitig gespeicherte Generation
-    reply_text = ""
-    generated = row.get("generated") or {}
-    try:
-        replies = (generated.get("replies") or [])
-        if replies:
-            reply_text = (replies[0].get("reply") or "").strip()
-    except Exception:
-        reply_text = ""
+    overwrite = str(body.get("overwrite") or "").strip().lower() in ("1", "true", "yes", "on")
 
-    # Optional: client-supplied reply (nur wenn explizit erlaubt)
-    if ALLOW_CLIENT_REPLY_OVERRIDE:
-        body = request.get_json(silent=True) or {}
-        candidate = (body.get("reply") or "").strip()
-        if candidate:
-            reply_text = candidate
+    # Reply-Text: bevorzugt UI (damit Edit nachträglich funktioniert)
+    reply_text = (body.get("reply") or "").strip()
+
+    # Fallback: generierte Antwort aus DB
+    if not reply_text:
+        generated = row.get("generated") or {}
+        try:
+            replies = (generated.get("replies") or [])
+            if replies:
+                reply_text = (replies[0].get("reply") or "").strip()
+        except Exception:
+            reply_text = ""
 
     if not reply_text:
         return _json({"ok": False, "error": "no reply text available"}, 400)
+
+    # Guard: Reply-Limit (praktisch: früh failen)
+    if _utf8_len(reply_text) > 4096:
+        return _json({"ok": False, "error": "reply_too_long", "max_bytes": 4096}, 400)
 
     account_id = str(payload.get("accountId") or "").strip()
     location_id = str(payload.get("locationId") or "").strip()
     review_id = str(payload.get("reviewId") or "").strip()
 
+    # Serverseitiger Konflikt-Check (Race Conditions)
+    existing_reply = None
+    existing_updated_at = None
+    try:
+        review_obj = get_review(account_id, location_id, review_id)
+        rr = (review_obj.get("reviewReply") or {})
+        existing_reply = (rr.get("comment") or "").strip() or None
+        existing_updated_at = rr.get("updateTime") or None
+    except Exception as e:
+        # Wenn Check nicht möglich (z.B. fehlende OAuth-Creds), nicht hart blocken.
+        app.logger.warning("publish_precheck_failed rid=%s err=%s", rid, str(e))
+
+    if existing_reply and not overwrite:
+        # Idempotenz: wenn identisch, OK zurück
+        if existing_reply == reply_text:
+            prefill_set_published(rid, {"dry_run": bool(PUBLISH_DRY_RUN), "already_up_to_date": True})
+            return _json({"ok": True, "already_up_to_date": True, "existingReplyUpdatedAt": existing_updated_at}, 200)
+
+        return _json({
+            "ok": False,
+            "error": "already_replied",
+            "existingReply": existing_reply,
+            "existingReplyUpdatedAt": existing_updated_at,
+            "hint": "Set overwrite=true to replace the existing reply."
+        }, 409)
+
     # Dry Run
     if PUBLISH_DRY_RUN:
         app.logger.info(
-            "publish_dry_run rid=%s accountId=%s locationId=%s reviewId=%s reply_len=%s",
-            rid, account_id, location_id, review_id, len(reply_text),
+            "publish_dry_run rid=%s accountId=%s locationId=%s reviewId=%s reply_len=%s overwrite=%s",
+            rid, account_id, location_id, review_id, len(reply_text), overwrite
         )
-        prefill_set_published(rid, {"dry_run": True, "rid": rid})
+        prefill_set_published(rid, {"dry_run": True, "rid": rid, "overwrite": overwrite})
         return _json({"ok": True, "dry_run": True, "message": "Dry-Run OK (siehe Railway Logs)"}, 200)
 
-    # Echt veröffentlichen
+    # Echt veröffentlichen (UpdateReply überschreibt/erstellt)
     try:
         result = publish_reply(account_id, location_id, review_id, reply_text)
-        prefill_set_published(rid, {"dry_run": False, "result": result})
+        prefill_set_published(rid, {"dry_run": False, "result": result, "overwrite": overwrite})
         return _json({"ok": True, "dry_run": False, "result": result}, 200)
     except Exception as e:
         app.logger.exception("publish_error rid=%s", rid)
@@ -443,6 +505,9 @@ def index():
     publish_missing: List[str] = []
     prefill_mode = bool(rid)
 
+    published_at = None
+    publish_result = None
+
     if rid:
         row = prefill_get_row(rid)
         if row and row.get("payload"):
@@ -458,6 +523,9 @@ def index():
 
             if row.get("generated"):
                 replies = (row["generated"] or {}).get("replies")
+
+            published_at = row.get("published_at")
+            publish_result = row.get("publish_result")
 
     values = {
         "selectedTone": "friendly",
@@ -478,8 +546,10 @@ def index():
         publish_ui_enabled=PUBLISH_UI_ENABLED,
         publish_ready=publish_ready,
         publish_missing=publish_missing,
-
         publish_dry_run=PUBLISH_DRY_RUN,
+
+        published_at=published_at,
+        publish_result=publish_result,
     )
 
 def _first_non_empty_pairs(reviews: List[str], ratings: List[str]) -> List[Tuple[str, str]]:
@@ -513,7 +583,7 @@ def generate():
             app.logger.warning("generate rid=%s received %s reviews; forcing single-review mode", rid, len(pairs))
         pairs = [pairs[0]]
 
-    replies = []
+    replies_out = []
     for (rev, rating) in pairs:
         prompt = build_prompt({
             "review": rev,
@@ -531,17 +601,17 @@ def generate():
 
         raw = (response.choices[0].message.content or "").strip()
         public, insights = split_public_and_insights(raw)
-        replies.append({"review": rev, "reply": public, "insights": insights})
+        replies_out.append({"review": rev, "reply": public, "insights": insights})
 
     if rid:
-        prefill_set_generated(rid, {"replies": replies})
+        prefill_set_generated(rid, {"replies": replies_out})
         return redirect(url_for("index", rid=rid))
 
     return render_template(
         "index.html",
         values=values,
         reviews=[{"review": r} for r in reviews],
-        replies=replies,
+        replies=replies_out,
         rid=rid,
         prefill_mode=False,
 
@@ -550,6 +620,9 @@ def generate():
         publish_ready=False,
         publish_missing=["accountId", "locationId", "reviewId"],
         publish_dry_run=PUBLISH_DRY_RUN,
+
+        published_at=None,
+        publish_result=None,
     )
 
 # --------------------------------------------------------
