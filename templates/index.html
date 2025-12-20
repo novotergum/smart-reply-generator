@@ -1,4 +1,3 @@
-<!-- templates/index.html -->
 <!doctype html>
 <html lang="de">
 <head>
@@ -70,6 +69,7 @@
       background:#f3f4f6;color:var(--ink);border:1px solid #e5e7eb;
     }
     .btn-secondary:hover{background:#e5e7f3;}
+    .btn-secondary[disabled]{opacity:.6;cursor:not-allowed;}
 
     .actions{margin-top:16px;}
     .grid{display:grid;grid-template-columns:1fr;gap:10px 20px;margin-top:10px;}
@@ -216,11 +216,17 @@
       <div class="field">
         <label for="reply_{{ loop.index0 }}">Öffentliche Antwort</label>
         <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
+        <p class="hint" id="edit-hint" style="display:none;margin-top:6px;">
+          Bearbeitungsmodus aktiv – beim Veröffentlichen wird der aktuelle Text gesendet.
+        </p>
       </div>
 
       {% if loop.first and publish_ui_enabled and rid %}
         {% if publish_enabled and publish_ready %}
           <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+            <button type="button" class="btn-secondary" id="edit-reply-btn">
+              Antwort bearbeiten
+            </button>
             <button type="button" class="btn-secondary" id="publish-btn">
               Auf Google veröffentlichen
             </button>
@@ -261,6 +267,10 @@ document.addEventListener('DOMContentLoaded', function () {
 
   const publishBtn = document.getElementById('publish-btn');
   const publishStatus = document.getElementById('publish-status');
+
+  const editBtn = document.getElementById('edit-reply-btn');
+  const editHint = document.getElementById('edit-hint');
+  const replyTextarea = document.getElementById('reply_0');
 
   const MAX_REVIEWS  = 10;
   const DAILY_LIMIT  = 50;
@@ -406,6 +416,25 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   // -------------------------
+  // Edit Toggle (Reply)
+  // -------------------------
+  if (editBtn && replyTextarea) {
+    editBtn.addEventListener('click', function () {
+      const isReadonly = replyTextarea.hasAttribute('readonly');
+      if (isReadonly) {
+        replyTextarea.removeAttribute('readonly');
+        replyTextarea.focus();
+        editBtn.textContent = 'Bearbeitung sperren';
+        if (editHint) editHint.style.display = 'block';
+      } else {
+        replyTextarea.setAttribute('readonly', 'readonly');
+        editBtn.textContent = 'Antwort bearbeiten';
+        if (editHint) editHint.style.display = 'none';
+      }
+    });
+  }
+
+  // -------------------------
   // Publish Button
   // -------------------------
   async function getPrefillSecretOnce() {
@@ -418,6 +447,29 @@ document.addEventListener('DOMContentLoaded', function () {
     return s;
   }
 
+  function ellipsize(s, maxLen) {
+    s = (s || "").trim();
+    if (s.length <= maxLen) return s;
+    return s.slice(0, maxLen) + " …";
+  }
+
+  async function doPublish({ rid, secret, reply, overwrite }) {
+    const res = await fetch(`/api/publish?rid=${encodeURIComponent(rid)}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Prefill-Secret": secret
+      },
+      body: JSON.stringify({ rid, reply, overwrite })
+    });
+
+    const txt = await res.text();
+    let j = null;
+    try { j = JSON.parse(txt); } catch {}
+
+    return { res, txt, j };
+  }
+
   if (publishBtn) {
     publishBtn.addEventListener('click', async function () {
       try {
@@ -427,7 +479,13 @@ document.addEventListener('DOMContentLoaded', function () {
           return;
         }
 
-        if (!confirm("Wirklich auf Google veröffentlichen? Dieser Schritt ist nicht rückgängig zu machen.")) {
+        const reply = (replyTextarea ? replyTextarea.value : "").trim();
+        if (!reply) {
+          alert("Reply ist leer.");
+          return;
+        }
+
+        if (!confirm("Wirklich auf Google veröffentlichen?")) {
           return;
         }
 
@@ -440,25 +498,42 @@ document.addEventListener('DOMContentLoaded', function () {
         publishBtn.disabled = true;
         if (publishStatus) publishStatus.textContent = "Publishing läuft …";
 
-        const res = await fetch(`/api/publish?rid=${encodeURIComponent(rid)}`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Prefill-Secret": secret
-          },
-          body: JSON.stringify({ rid })
-        });
+        // 1) Versuch ohne overwrite
+        let out = await doPublish({ rid, secret, reply, overwrite: false });
 
-        const txt = await res.text();
-        let j = null;
-        try { j = JSON.parse(txt); } catch {}
+        // 409 = already_replied → UX: Hinweis + Retry mit overwrite
+        if (out.res.status === 409 && out.j && out.j.error === "already_replied") {
+          const existing = out.j.existingReply || "";
+          const updatedAt = out.j.existingReplyUpdatedAt || "";
 
-        if (!res.ok) {
-          const msg = (j && (j.error || j.message)) ? (j.error || j.message) : txt;
-          throw new Error(`HTTP ${res.status}: ${msg}`);
+          const msg =
+            "Hinweis: Für diese Rezension existiert bereits eine öffentliche Antwort.\n\n" +
+            (updatedAt ? ("Letztes Update: " + updatedAt + "\n\n") : "") +
+            "Bestehende Antwort (Auszug):\n" +
+            ellipsize(existing, 380) + "\n\n" +
+            "Möchtest du sie überschreiben?";
+
+          const ok = confirm(msg);
+          if (!ok) {
+            if (publishStatus) publishStatus.textContent = "Abgebrochen (bestehende Antwort erkannt).";
+            return;
+          }
+
+          if (publishStatus) publishStatus.textContent = "Überschreiben läuft …";
+          out = await doPublish({ rid, secret, reply, overwrite: true });
         }
 
-        if (j && j.dry_run) {
+        if (!out.res.ok) {
+          const msg = (out.j && (out.j.error || out.j.message)) ? (out.j.error || out.j.message) : out.txt;
+          throw new Error(`HTTP ${out.res.status}: ${msg}`);
+        }
+
+        if (out.j && out.j.already_up_to_date) {
+          if (publishStatus) publishStatus.textContent = "Bereits aktuell (keine Änderung nötig).";
+          return;
+        }
+
+        if (out.j && out.j.dry_run) {
           if (publishStatus) publishStatus.textContent = "Dry-Run OK (siehe Railway Logs)";
         } else {
           if (publishStatus) publishStatus.textContent = "Veröffentlicht.";
