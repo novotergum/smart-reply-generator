@@ -110,6 +110,7 @@ def _suffix_line(name: str, date: str) -> str:
         return ""
     return "— " + ", ".join(parts)
 
+CORS_ALLOW_ORIGINS = [o.strip() for o in os.getenv("CORS_ALLOW_ORIGINS", "").split(",") if o.strip()]
 
 def _dedupe_reviewer(text: str, reviewer: str, reviewed_at: str) -> str:
     text = (text or "").strip()
@@ -222,15 +223,20 @@ def api_debug_prefill():
     })
 
 
-@app.post("/api/publish")
+@app.route("/api/publish", methods=["POST", "OPTIONS"])
 def api_publish():
+    # Preflight
+    if request.method == "OPTIONS":
+        return ("", 204)
+
     if not ENABLE_PUBLISH:
         abort(403)
 
+    # Auth (fürs Testen ok; später besser token-basiert statt Secret im Browser)
     if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
         abort(401)
 
-    data = request.get_json(force=True) or {}
+    data = request.get_json(force=True, silent=True) or {}
 
     rid = (data.get("rid") or request.args.get("rid") or "").strip()
     if not rid:
@@ -267,6 +273,33 @@ def api_publish():
         return jsonify({"ok": True, "dry_run": True})
 
     return jsonify({"ok": False, "error": "publishing not implemented"}), 501
+
+@app.after_request
+def add_cors_headers(resp):
+    origin = request.headers.get("Origin")
+
+    # Nur für /api/* relevant
+    if request.path.startswith("/api/"):
+        # Wenn keine Liste gesetzt ist, nimm fail-closed (empfohlen): nichts erlauben.
+        # Für Debug/Test kannst du CORS_ALLOW_ORIGINS setzen.
+        if origin:
+            allow = False
+
+            # explizite Whitelist
+            if CORS_ALLOW_ORIGINS and origin in CORS_ALLOW_ORIGINS:
+                allow = True
+
+            # manche iframe/sandbox Szenarien senden Origin: null
+            if origin == "null" and os.getenv("CORS_ALLOW_NULL_ORIGIN", "").strip().lower() in ("1", "true", "yes", "on"):
+                allow = True
+
+            if allow:
+                resp.headers["Access-Control-Allow-Origin"] = origin
+                resp.headers["Vary"] = "Origin"
+                resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
+                resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Prefill-Secret"
+
+    return resp
 
 
 # -------------------- UI --------------------
