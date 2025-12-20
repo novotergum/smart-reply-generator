@@ -321,13 +321,10 @@
       {% if loop.first and publish_ui_enabled and rid %}
         {% if publish_enabled and publish_ready %}
           <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-            <button type="button" class="btn-secondary" id="publish-btn" disabled
-                    title="Der Publishing-Button ist aktuell absichtlich deaktiviert (Testmodus).">
-              Auf Google veröffentlichen (deaktiviert)
-            </button>
-            <span class="hint" id="publish-status" style="margin:0;">
-              Publishing ist bereit (accountId/locationId/reviewId vorhanden), Button ist aber absichtlich deaktiviert.
-            </span>
+<button type="button" class="btn-secondary" id="publish-btn">
+  Auf Google veröffentlichen
+</button>
+<span class="hint" id="publish-status" style="margin:0;"></span>
           </div>
         {% else %}
           <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
