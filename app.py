@@ -103,11 +103,14 @@ def prefill_init():
                     used_at BIGINT,
                     used_count INT DEFAULT 0,
                     generated JSONB,
-                    generated_at BIGINT,
-                    published_at BIGINT,
-                    publish_result JSONB
+                    generated_at BIGINT
                 )
             """)
+
+            # "Migrations" für bestehende Installationen:
+            cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS published_at BIGINT")
+            cur.execute("ALTER TABLE prefill ADD COLUMN IF NOT EXISTS publish_result JSONB")
+
         conn.commit()
 
 def prefill_insert(payload: dict) -> str:
