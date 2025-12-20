@@ -2,6 +2,7 @@ import os
 import json
 import time
 import secrets
+import hmac
 from typing import Any, Dict, Optional, Tuple, List
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -28,6 +29,9 @@ MAX_REVIEWS = 10
 PREFILL_SECRET = os.getenv("PREFILL_SECRET", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))  # 3 Tage
+
+# Publish Auth (Variante A)
+PUBLISH_PASSWORD = os.getenv("PUBLISH_PASSWORD", "").strip()
 
 # Google Business Profile OAuth (für echtes Publishing)
 GBP_CLIENT_ID = os.getenv("GBP_CLIENT_ID", "").strip()
@@ -72,7 +76,8 @@ def _corsify(resp):
             resp.headers["Vary"] = "Origin"
 
     resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Prefill-Secret"
+    # Wichtig: Publish-Passwort Header erlauben
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Prefill-Secret, X-Publish-Password"
     return resp
 
 def _json(data, status=200):
@@ -81,6 +86,14 @@ def _json(data, status=200):
 
 def _utf8_len(s: str) -> int:
     return len((s or "").encode("utf-8"))
+
+def _check_publish_password() -> bool:
+    # Wenn nicht gesetzt: Publishing ist faktisch ungeschützt -> blocken
+    if not PUBLISH_PASSWORD:
+        return False
+    candidate = (request.headers.get("X-Publish-Password") or "").strip()
+    # Timing-safe compare
+    return hmac.compare_digest(candidate, PUBLISH_PASSWORD)
 
 # --------------------------------------------------------
 # Datenbank
@@ -314,6 +327,7 @@ def publish_reply(account_id: str, location_id: str, review_id: str, reply_text:
 
 @app.post("/api/prefill")
 def api_prefill():
+    # PREFILL bleibt wie gehabt mit X-Prefill-Secret geschützt
     if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
         abort(401)
 
@@ -394,7 +408,8 @@ def api_publish():
     if request.method == "OPTIONS":
         return _corsify(make_response("", 204))
 
-    if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
+    # Variante A: Publishing ist mit X-Publish-Password geschützt
+    if not _check_publish_password():
         return _json({"ok": False, "error": "unauthorized"}, 401)
 
     if not ENABLE_PUBLISH:
