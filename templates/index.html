@@ -194,7 +194,6 @@
   </p>
 
   <form method="post" action="/generate">
-    <!-- wichtig: rid vom Prefill-Link wird beim Submit mitgeschickt -->
     <input type="hidden" name="rid" value="{{ rid or '' }}">
 
     <div id="reviews-container">
@@ -204,7 +203,6 @@
         <div class="review-block-header">
           <p class="review-heading">Bewertung {{ loop.index }}</p>
 
-          {# Prefill-Modus (rid) = Single-Review ⇒ Entfernen ausblenden #}
           {% if not prefill_mode %}
             <button type="button" class="remove-review-btn">Entfernen</button>
           {% endif %}
@@ -253,7 +251,6 @@
       {% endfor %}
     </div>
 
-    {# Prefill-Modus (rid) = Single-Review ⇒ Add-Button ausblenden #}
     {% if not prefill_mode %}
       <div style="margin:6px 0 4px;">
         <button type="button" id="add-review-btn" class="btn-secondary">
@@ -317,14 +314,13 @@
         <textarea id="reply_{{ loop.index0 }}" rows="6" readonly>{{ item.reply }}</textarea>
       </div>
 
-      {# Publishing-UI: genau einmal anzeigen (bei erster Reply-Card), sobald UI enabled + rid #}
       {% if loop.first and publish_ui_enabled and rid %}
         {% if publish_enabled and publish_ready %}
           <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
-<button type="button" class="btn-secondary" id="publish-btn">
-  Auf Google veröffentlichen
-</button>
-<span class="hint" id="publish-status" style="margin:0;"></span>
+            <button type="button" class="btn-secondary" id="publish-btn">
+              Auf Google veröffentlichen
+            </button>
+            <span class="hint" id="publish-status" style="margin:0;"></span>
           </div>
         {% else %}
           <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
@@ -500,6 +496,66 @@ document.addEventListener('DOMContentLoaded', function () {
 
       submitBtn.disabled = true;
       submitBtn.textContent = 'Antwortvorschläge werden erzeugt …';
+    });
+  }
+
+  // ---------- Publish (Dry-Run) ----------
+  const publishBtn = document.getElementById('publish-btn');
+  const publishStatus = document.getElementById('publish-status');
+
+  if (publishBtn) {
+    publishBtn.addEventListener('click', async function () {
+      try {
+        const ridInput = document.querySelector('input[name="rid"]');
+        const rid = ridInput ? ridInput.value.trim() : '';
+        if (!rid) {
+          alert('Kein rid gefunden.');
+          return;
+        }
+
+        const secret = prompt('X-Prefill-Secret eingeben (nur intern):');
+        if (!secret) return;
+
+        const replyBox = document.getElementById('reply_0');
+        const replyText = replyBox ? replyBox.value.trim() : '';
+        if (!replyText) {
+          alert('Keine Antwort gefunden (reply_0 ist leer).');
+          return;
+        }
+
+        publishBtn.disabled = true;
+        if (publishStatus) publishStatus.textContent = 'Sende Publish-Test …';
+
+        const res = await fetch('/api/publish?rid=' + encodeURIComponent(rid), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Prefill-Secret': secret
+          },
+          body: JSON.stringify({ rid, reply: replyText })
+        });
+
+        const txt = await res.text();
+        let j = null;
+        try { j = JSON.parse(txt); } catch (e) {}
+
+        if (!res.ok) {
+          const msg = (j && (j.error || j.message)) ? (j.error || j.message) : txt;
+          if (publishStatus) publishStatus.textContent = 'Fehler: ' + msg;
+          alert('Publish-Test fehlgeschlagen: ' + msg);
+          return;
+        }
+
+        if (publishStatus) {
+          publishStatus.textContent = j && j.dry_run ? 'Dry-Run OK (siehe Railway Logs)' : 'OK';
+        }
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        if (publishStatus) publishStatus.textContent = 'Fehler: ' + msg;
+        alert(msg);
+      } finally {
+        publishBtn.disabled = false;
+      }
     });
   }
 
