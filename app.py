@@ -12,17 +12,12 @@ from dotenv import load_dotenv
 
 from generate_prompt import build_prompt, split_public_and_insights
 
-# --------------------------------------------------------
-# Grundkonfiguration
-# --------------------------------------------------------
-
 load_dotenv()
 app = Flask(__name__)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 MAX_REVIEWS = 10
-MAKE_WEBHOOK_URL = os.getenv("MAKE_WEBHOOK_URL", "")
 PREFILL_SECRET = os.getenv("PREFILL_SECRET", "")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))  # 3 Tage
@@ -34,11 +29,10 @@ def env_truthy(v: str) -> bool:
 
 ENABLE_PUBLISH = env_truthy("ENABLE_PUBLISH")
 PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
+PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
 
 
-# --------------------------------------------------------
-# Datenbank
-# --------------------------------------------------------
+# -------------------- DB --------------------
 
 def pg_connect():
     if not DATABASE_URL:
@@ -86,7 +80,6 @@ def prefill_get_row(rid: str) -> Optional[dict]:
                 return None
 
             payload_raw, generated_raw, created_at = row
-
             payload = json.loads(payload_raw) if isinstance(payload_raw, str) else payload_raw
             generated = json.loads(generated_raw) if isinstance(generated_raw, str) else generated_raw
 
@@ -105,9 +98,7 @@ def prefill_set_generated(rid: str, data: dict):
         conn.commit()
 
 
-# --------------------------------------------------------
-# Reviewer-Deduplikation
-# --------------------------------------------------------
+# -------------------- Reviewer suffix dedupe --------------------
 
 def _suffix_line(name: str, date: str) -> str:
     parts = []
@@ -138,17 +129,9 @@ def _dedupe_reviewer(text: str, reviewer: str, reviewed_at: str) -> str:
     return "\n".join(lines)
 
 
-# --------------------------------------------------------
-# Publishing readiness
-# --------------------------------------------------------
+# -------------------- Publishing readiness --------------------
 
 def compute_publish_ready(payload: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    """
-    publish_ready ist nur dann true, wenn wir eindeutig publishen können:
-      - accountId
-      - locationId
-      - reviewId
-    """
     p = payload or {}
     missing = []
     for k in ("accountId", "locationId", "reviewId"):
@@ -158,9 +141,7 @@ def compute_publish_ready(payload: Dict[str, Any]) -> Tuple[bool, List[str]]:
     return (len(missing) == 0), missing
 
 
-# --------------------------------------------------------
-# API
-# --------------------------------------------------------
+# -------------------- API --------------------
 
 @app.post("/api/prefill")
 def api_prefill():
@@ -169,13 +150,11 @@ def api_prefill():
 
     data = request.get_json(force=True) or {}
 
-    # Core fields
     review = (data.get("review") or "").strip()
     reviewer = (data.get("reviewer") or "").strip()
     reviewed_at = (data.get("reviewed_at") or "").strip()
     rating = str(data.get("rating") or "").strip()
 
-    # IDs fürs Publishing (tolerant: falls jemand snake_case liefert)
     account_id = (data.get("accountId") or data.get("account_id") or "").strip()
     location_id = (data.get("locationId") or data.get("location_id") or "").strip()
     review_id = (data.get("reviewId") or data.get("review_id") or "").strip()
@@ -192,7 +171,6 @@ def api_prefill():
         "locationId": location_id,
         "reviewId": review_id,
 
-        # optional meta
         "storeCode": data.get("storeCode"),
         "locationTitle": data.get("locationTitle"),
 
@@ -204,7 +182,6 @@ def api_prefill():
 
     rid = prefill_insert(payload)
 
-    # Log nur Presence, nicht Inhalte
     ready, missing = compute_publish_ready(payload)
     app.logger.info(
         "prefill_in rid=%s ready=%s missing=%s accountId=%s locationId=%s reviewId=%s",
@@ -221,11 +198,6 @@ def api_prefill():
 
 @app.route("/api/debug/prefill", methods=["GET"])
 def api_debug_prefill():
-    """
-    Debug-Endpoint (nur intern): zeigt, was in der DB zum rid steht.
-    Hinweis: CORS-frei testen, indem du die Smart-Reply-URL direkt öffnest
-    (same-origin in DevTools).
-    """
     if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
         abort(401)
 
@@ -250,9 +222,54 @@ def api_debug_prefill():
     })
 
 
-# --------------------------------------------------------
-# Index + Generator
-# --------------------------------------------------------
+@app.post("/api/publish")
+def api_publish():
+    if not ENABLE_PUBLISH:
+        abort(403)
+
+    if request.headers.get("X-Prefill-Secret") != PREFILL_SECRET:
+        abort(401)
+
+    data = request.get_json(force=True) or {}
+
+    rid = (data.get("rid") or request.args.get("rid") or "").strip()
+    if not rid:
+        return jsonify({"ok": False, "error": "missing rid"}), 400
+
+    row = prefill_get_row(rid)
+    if not row:
+        return jsonify({"ok": False, "error": "rid not found"}), 404
+
+    payload = row.get("payload") or {}
+    ready, missing = compute_publish_ready(payload)
+    if not ready:
+        return jsonify({"ok": False, "error": "publish not ready", "missing": missing}), 400
+
+    reply = (data.get("reply") or "").strip()
+    if not reply:
+        gen = row.get("generated") or {}
+        reps = (gen.get("replies") or [])
+        if reps and isinstance(reps[0], dict):
+            reply = (reps[0].get("reply") or "").strip()
+
+    if not reply:
+        return jsonify({"ok": False, "error": "missing reply text"}), 400
+
+    if PUBLISH_DRY_RUN:
+        app.logger.info(
+            "publish_dry_run rid=%s accountId=%s locationId=%s reviewId=%s reply_len=%s",
+            rid,
+            payload.get("accountId"),
+            payload.get("locationId"),
+            payload.get("reviewId"),
+            len(reply),
+        )
+        return jsonify({"ok": True, "dry_run": True})
+
+    return jsonify({"ok": False, "error": "publishing not implemented"}), 501
+
+
+# -------------------- UI --------------------
 
 @app.route("/", methods=["GET"])
 def index():
@@ -306,9 +323,6 @@ def index():
 
 
 def _first_non_empty_pairs(reviews: List[str], ratings: List[str]) -> List[Tuple[str, str]]:
-    """
-    Normalisiert Reviews/Ratings zu Paaren (review_text, rating_text) und filtert leere reviews raus.
-    """
     pairs: List[Tuple[str, str]] = []
     for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
         rev_txt = (rev or "").strip()
@@ -322,6 +336,8 @@ def _first_non_empty_pairs(reviews: List[str], ratings: List[str]) -> List[Tuple
 @app.post("/generate")
 def generate():
     rid = (request.form.get("rid") or "").strip()
+    prefill_mode = bool(rid)
+
     reviews = request.form.getlist("review")
     ratings = request.form.getlist("rating")
 
@@ -334,7 +350,7 @@ def generate():
 
     pairs = _first_non_empty_pairs(reviews, ratings)
 
-    # rid steht für genau 1 Review → nur das erste nicht-leere Paar verarbeiten
+    # rid => Single-Review erzwingen (auch wenn jemand via DevTools mehr Felder einschleust)
     if rid and pairs:
         if len(pairs) > 1:
             app.logger.warning("generate rid=%s received %s reviews; forcing single-review mode", rid, len(pairs))
@@ -366,14 +382,14 @@ def generate():
         prefill_set_generated(rid, {"replies": replies})
         return redirect(url_for("index", rid=rid))
 
-    # Ohne rid: publish ist nicht möglich
+    # Ohne rid: multi-review modus
     return render_template(
         "index.html",
         values=values,
         reviews=[{"review": r} for r in reviews],
         replies=replies,
         rid=rid,
-        prefill_mode=False,
+        prefill_mode=prefill_mode,
 
         publish_enabled=ENABLE_PUBLISH,
         publish_ui_enabled=PUBLISH_UI_ENABLED,
@@ -383,9 +399,7 @@ def generate():
     )
 
 
-# --------------------------------------------------------
-# Start
-# --------------------------------------------------------
+# -------------------- Start --------------------
 
 if DATABASE_URL:
     prefill_init()
