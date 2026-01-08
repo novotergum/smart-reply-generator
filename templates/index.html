@@ -28,6 +28,20 @@
     }
     h1{font-size:22px;margin:0 0 4px;}
     .lead{margin:0 0 20px;font-size:14px;color:var(--muted);}
+
+    /* Deutlicher Hinweis (Dashboard) */
+    .notice{
+      margin:12px 0 18px;
+      padding:12px 14px;
+      border-radius:12px;
+      background:#fff7ed;
+      border:1px solid #fdba74;
+      color:#9a3412;
+      font-size:13px;
+      line-height:1.4;
+    }
+    .notice strong{color:#7c2d12;}
+
     form{margin:0;}
     .field{display:flex;flex-direction:column;gap:6px;margin-bottom:12px;}
     label{font-size:13px;color:var(--muted);}
@@ -98,6 +112,13 @@
     Füge eine oder mehrere Google- bzw. Portalbewertungen ein und erhalte passende Antwortvorschläge im NOVOTERGUM-Stil –
     inklusive interner Analyse für Qualitäts-Insights.
   </p>
+
+  {# Idiotensicher: globaler Hinweis im Dashboard, aber nur wenn Publishing-UI prinzipiell aktiv ist #}
+  {% if publish_ui_enabled %}
+    <div class="notice">
+      <strong>Hinweis (intern):</strong> Das <strong>Publish-Passwort</strong> ist identisch mit dem Passwort für das <strong>Regio Dashboard</strong>.
+    </div>
+  {% endif %}
 
   <form method="post" action="/generate">
     <input type="hidden" name="rid" value="{{ rid or '' }}">
@@ -222,6 +243,11 @@
       </div>
 
       {% if loop.first and publish_ui_enabled and rid %}
+        {# Zusätzlich idiotensicher direkt am Publishing-Block #}
+        <div class="notice" style="margin-top:10px;">
+          <strong>Hinweis (intern):</strong> Das <strong>Publish-Passwort</strong> ist identisch mit dem Passwort für das <strong>Regio Dashboard</strong>.
+        </div>
+
         {% if publish_enabled and publish_ready %}
           <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
             <button type="button" class="btn-secondary" id="edit-reply-btn">
@@ -441,7 +467,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const key = "publishPassword_v1";
     let s = sessionStorage.getItem(key) || "";
     if (s) return s;
-    s = prompt("Publish-Passwort (nur intern):") || "";
+    // Prompt bleibt, aber die UI zeigt jetzt idiotensicher, welches Passwort gemeint ist.
+    s = prompt("Publish-Passwort (wie Regio Dashboard):") || "";
     s = s.trim();
     if (s) sessionStorage.setItem(key, s);
     return s;
