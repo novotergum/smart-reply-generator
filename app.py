@@ -403,6 +403,37 @@ def api_debug_prefill():
         "reviewId": p.get("reviewId"),
     })
 
+@app.route("/api/review-by-rid", methods=["GET", "OPTIONS"])
+def api_review_by_rid():
+    if request.method == "OPTIONS":
+        return _corsify(make_response("", 204))
+
+    rid = (request.args.get("rid") or "").strip()
+    if not rid:
+        return _json({"error": "missing rid"}, 400)
+
+    row = prefill_get_row(rid)
+    if not row or not row.get("payload"):
+        return _json({"error": "rid not found"}, 404)
+
+    created_at = int(row.get("created_at") or 0)
+    if created_at and int(time.time()) - created_at > PREFILL_TTL_SECONDS:
+        return _json({"error": "rid expired"}, 410)
+
+    payload = row["payload"]
+    review_text = (payload.get("review") or "").strip()
+
+    if not review_text:
+        return _json({"error": "no review text"}, 404)
+
+    return _json({
+        "rid": rid,
+        "review_text": review_text,
+        "rating": payload.get("rating"),
+        "reviewer": payload.get("reviewer"),
+        "reviewed_at": payload.get("reviewed_at"),
+    })
+
 @app.route("/api/publish", methods=["OPTIONS", "POST"])
 def api_publish():
     if request.method == "OPTIONS":
