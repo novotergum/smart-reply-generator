@@ -134,6 +134,10 @@ def prefill_insert(payload: dict) -> str:
         conn.commit()
     return rid
 
+def prefill_clone_with_new_rid(old_row: dict) -> str:
+    payload = old_row.get("payload") or {}
+    return prefill_insert(payload)
+
 def prefill_get_row(rid: str) -> Optional[dict]:
     if not rid:
         return None
@@ -424,7 +428,12 @@ def api_review_by_rid():
     now = int(time.time())
     
     if now > expires_at:
-        return _json({"error": "rid expired"}, 410)
+        new_rid = prefill_clone_with_new_rid(row)
+        return _json({
+            "error": "rid expired",
+            "new_rid": new_rid,
+            "redirect": f"/?rid={new_rid}"
+        }, 410)
 
 
     payload = row["payload"]
@@ -472,10 +481,15 @@ def api_publish():
     
     expires_at = created_at + PREFILL_TTL_SECONDS
     now = int(time.time())
-    
-    if now > expires_at:
-        return _json({"ok": False, "error": "rid expired"}, 410)
 
+    if now > expires_at:
+    new_rid = prefill_clone_with_new_rid(row)
+    return _json({
+        "ok": False,
+        "error": "rid expired",
+        "new_rid": new_rid,
+        "redirect": f"/?rid={new_rid}"
+    }, 410)
 
     payload = row.get("payload") or {}
     publish_ready, missing = compute_publish_ready(payload)
