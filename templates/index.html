@@ -490,11 +490,18 @@ document.addEventListener('DOMContentLoaded', function () {
       body: JSON.stringify({ rid, reply, overwrite })
     });
 
-    const txt = await res.text();
-    let j = null;
-    try { j = JSON.parse(txt); } catch {}
+  const txt = await res.text();
+  let j = null;
+  try { j = JSON.parse(txt); } catch {}
+  
+  // 🔁 FIX: RID abgelaufen → automatisch neu laden
+  if (res.status === 410 && j && j.redirect) {
+    window.location.href = j.redirect;
+    return; // wichtig: nichts weiter ausführen
+  }
+  
+  return { res, txt, j };
 
-    return { res, txt, j };
   }
 
   if (publishBtn) {
