@@ -535,6 +535,17 @@ document.addEventListener('DOMContentLoaded', function () {
         // 1) Versuch ohne overwrite
         let out = await doPublish({ rid, password, reply, overwrite: false });
 
+                // 🔁 WICHTIG: doPublish() kann bei 410 undefined zurückgeben (Redirect)
+        // → dann HIER abbrechen, sonst crasht out.res
+        if (!out) return;
+        
+        // 409 = already_replied → UX: Hinweis + Retry mit overwrite
+        if (out.res.status === 409 && out.j && out.j.error === "already_replied") {
+          const existing = out.j.existingReply || "";
+          const updatedAt = out.j.existingReplyUpdatedAt || "";
+          ...
+        }
+
         // 409 = already_replied → UX: Hinweis + Retry mit overwrite
         if (out.res.status === 409 && out.j && out.j.error === "already_replied") {
           const existing = out.j.existingReply || "";
