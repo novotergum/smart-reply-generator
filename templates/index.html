@@ -543,13 +543,6 @@ document.addEventListener('DOMContentLoaded', function () {
         if (out.res.status === 409 && out.j && out.j.error === "already_replied") {
           const existing = out.j.existingReply || "";
           const updatedAt = out.j.existingReplyUpdatedAt || "";
-          ...
-        }
-
-        // 409 = already_replied → UX: Hinweis + Retry mit overwrite
-        if (out.res.status === 409 && out.j && out.j.error === "already_replied") {
-          const existing = out.j.existingReply || "";
-          const updatedAt = out.j.existingReplyUpdatedAt || "";
 
           const msg =
             "Hinweis: Für diese Rezension existiert bereits eine öffentliche Antwort.\n\n" +
