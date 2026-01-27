@@ -484,12 +484,12 @@ def api_publish():
 
     if now > expires_at:
     new_rid = prefill_clone_with_new_rid(row)
-    return _json({
-        "ok": False,
-        "error": "rid expired",
-        "new_rid": new_rid,
-        "redirect": f"/?rid={new_rid}"
-    }, 410)
+        return _json({
+            "ok": False,
+            "error": "rid expired",
+            "new_rid": new_rid,
+            "redirect": f"/?rid={new_rid}"
+        }, 410)
 
     payload = row.get("payload") or {}
     publish_ready, missing = compute_publish_ready(payload)
