@@ -483,7 +483,7 @@ def api_publish():
     now = int(time.time())
 
     if now > expires_at:
-    new_rid = prefill_clone_with_new_rid(row)
+        new_rid = prefill_clone_with_new_rid(row)
         return _json({
             "ok": False,
             "error": "rid expired",
