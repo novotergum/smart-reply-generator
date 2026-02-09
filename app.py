@@ -39,6 +39,10 @@ GBP_CLIENT_ID = os.getenv("GBP_CLIENT_ID", "").strip()
 GBP_CLIENT_SECRET = os.getenv("GBP_CLIENT_SECRET", "").strip()
 GBP_REFRESH_TOKEN = os.getenv("GBP_REFRESH_TOKEN", "").strip()
 
+# --------------------------------------------------------
+# Feature Flags
+# --------------------------------------------------------
+
 def env_truthy(name: str) -> bool:
     return str(os.getenv(name, "")).strip().lower() in ("1", "true", "yes", "on")
 
@@ -52,6 +56,18 @@ PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
 
 def _utf8_len(s: str) -> int:
     return len((s or "").encode("utf-8"))
+
+def _check_publish_password() -> bool:
+    if not PUBLISH_PASSWORD:
+        return False
+    candidate = (request.headers.get("X-Publish-Password") or "").strip()
+    return hmac.compare_digest(candidate, PUBLISH_PASSWORD)
+
+def must_env(name: str) -> str:
+    v = os.getenv(name, "").strip()
+    if not v:
+        raise RuntimeError(f"Missing env: {name}")
+    return v
 
 # --------------------------------------------------------
 # Datenbank (Prefill)
@@ -71,7 +87,9 @@ def prefill_init():
                     payload JSONB NOT NULL,
                     created_at BIGINT NOT NULL,
                     generated JSONB,
-                    generated_at BIGINT
+                    generated_at BIGINT,
+                    published_at BIGINT,
+                    publish_result JSONB
                 )
             """)
         conn.commit()
@@ -93,16 +111,19 @@ def prefill_get_row(rid: str) -> Optional[dict]:
     with pg_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT payload,generated FROM prefill WHERE rid=%s",
+                "SELECT payload,generated,created_at,published_at,publish_result FROM prefill WHERE rid=%s",
                 (rid,),
             )
             row = cur.fetchone()
             if not row:
                 return None
-            payload_raw, generated_raw = row
+            payload_raw, generated_raw, created_at, published_at, publish_result_raw = row
             return {
                 "payload": payload_raw,
                 "generated": generated_raw,
+                "created_at": created_at,
+                "published_at": published_at,
+                "publish_result": publish_result_raw,
             }
 
 def prefill_set_generated(rid: str, data: dict):
@@ -113,6 +134,63 @@ def prefill_set_generated(rid: str, data: dict):
                 (json.dumps(data, ensure_ascii=False), int(time.time()), rid),
             )
         conn.commit()
+
+def prefill_set_published(rid: str, result: dict):
+    with pg_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE prefill SET published_at=%s,publish_result=%s WHERE rid=%s",
+                (int(time.time()), json.dumps(result, ensure_ascii=False), rid),
+            )
+        conn.commit()
+
+# --------------------------------------------------------
+# Google OAuth + Publish
+# --------------------------------------------------------
+
+def get_access_token() -> str:
+    must_env("GBP_CLIENT_ID")
+    must_env("GBP_CLIENT_SECRET")
+    must_env("GBP_REFRESH_TOKEN")
+
+    body = urlencode({
+        "client_id": GBP_CLIENT_ID,
+        "client_secret": GBP_CLIENT_SECRET,
+        "refresh_token": GBP_REFRESH_TOKEN,
+        "grant_type": "refresh_token",
+    }).encode("utf-8")
+
+    req = Request(
+        "https://oauth2.googleapis.com/token",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+
+    with urlopen(req, timeout=20) as resp:
+        raw = resp.read().decode("utf-8")
+    j = json.loads(raw)
+    return j["access_token"]
+
+def publish_reply(account_id: str, location_id: str, review_id: str, reply_text: str) -> dict:
+    access_token = get_access_token()
+    name = f"accounts/{account_id}/locations/{location_id}/reviews/{review_id}"
+    url = f"https://mybusiness.googleapis.com/v4/{name}/reply"
+
+    body = json.dumps({"comment": reply_text}, ensure_ascii=False).encode("utf-8")
+    req = Request(
+        url,
+        data=body,
+        method="PUT",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    with urlopen(req, timeout=25) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {"ok": True}
 
 # --------------------------------------------------------
 # Index
@@ -126,6 +204,9 @@ def index():
     replies = None
     prefill_mode = bool(rid)
     location_title = ""
+
+    publish_ready = False
+    publish_missing = []
 
     if rid:
         row = prefill_get_row(rid)
@@ -142,6 +223,11 @@ def index():
 
             if row.get("generated"):
                 replies = (row["generated"] or {}).get("replies")
+
+            for k in ("accountId", "locationId", "reviewId"):
+                if not p.get(k):
+                    publish_missing.append(k)
+            publish_ready = not publish_missing
 
     values = {
         "selectedTone": "friendly",
@@ -160,6 +246,8 @@ def index():
         location_title=location_title,
         publish_enabled=ENABLE_PUBLISH,
         publish_ui_enabled=PUBLISH_UI_ENABLED,
+        publish_ready=publish_ready,
+        publish_missing=publish_missing,
         publish_dry_run=PUBLISH_DRY_RUN,
     )
 
@@ -192,7 +280,6 @@ def generate():
     }
 
     pairs = _first_non_empty_pairs(reviews, ratings)
-
     if rid and pairs:
         pairs = [pairs[0]]
 
@@ -238,6 +325,8 @@ def generate():
         location_title="",
         publish_enabled=ENABLE_PUBLISH,
         publish_ui_enabled=PUBLISH_UI_ENABLED,
+        publish_ready=False,
+        publish_missing=["accountId", "locationId", "reviewId"],
         publish_dry_run=PUBLISH_DRY_RUN,
     )
 
