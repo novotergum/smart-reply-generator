@@ -273,6 +273,17 @@
             <span class="hint" id="publish-status" style="margin:0;">
               {% if publish_dry_run %}Dry-Run ist aktiv{% endif %}
             </span>
+            {% if google_check_url %}
+          <div style="margin-top:6px;">
+            <a href="{{ google_check_url }}"
+             target="_blank"
+             rel="noopener"
+             style="font-size:13px;">
+          🔗 Auf Google Maps ansehen
+            </a>
+          </div>
+          {% endif %}
+
           </div>
         {% else %}
           <div style="margin-top:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
