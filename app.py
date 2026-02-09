@@ -50,7 +50,7 @@ PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
 PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
 
 # --------------------------------------------------------
-# Defaults (🔥 DER WICHTIGE FIX)
+# Defaults (🔥 FIX gegen jinja2 values undefined)
 # --------------------------------------------------------
 
 def default_values() -> Dict[str, str]:
@@ -184,8 +184,7 @@ def get_access_token() -> str:
 
     with urlopen(req, timeout=20) as resp:
         raw = resp.read().decode("utf-8")
-    j = json.loads(raw)
-    return j["access_token"]
+    return json.loads(raw)["access_token"]
 
 def publish_reply(account_id: str, location_id: str, review_id: str, reply_text: str) -> dict:
     access_token = get_access_token()
@@ -337,7 +336,7 @@ def generate():
     )
 
 # --------------------------------------------------------
-# API: Publish
+# API: Publish + Google-Check-Link
 # --------------------------------------------------------
 
 @app.post("/api/publish")
@@ -360,6 +359,7 @@ def api_publish():
         return _json({"ok": False, "error": "rid not found"}, 404)
 
     payload = row["payload"]
+
     for k in ("accountId", "locationId", "reviewId"):
         if not payload.get(k):
             return _json({"ok": False, "error": "publish not ready", "missing": k}, 400)
@@ -370,9 +370,19 @@ def api_publish():
     if _utf8_len(reply_text) > 4096:
         return _json({"ok": False, "error": "reply too long"}, 400)
 
+    # 🔗 Google-Check-Link
+    public_review_url = None
+    if payload.get("maps_place_url") and payload.get("reviewId"):
+        public_review_url = f'{payload["maps_place_url"]}&reviewId={payload["reviewId"]}'
+    elif payload.get("place_id") and payload.get("reviewId"):
+        public_review_url = (
+            "https://www.google.com/maps/place/?q=place_id="
+            f'{payload["place_id"]}&reviewId={payload["reviewId"]}'
+        )
+
     if PUBLISH_DRY_RUN:
-        prefill_set_published(rid, {"dry_run": True})
-        return _json({"ok": True, "dry_run": True})
+        prefill_set_published(rid, {"dry_run": True, "public_review_url": public_review_url})
+        return _json({"ok": True, "dry_run": True, "public_review_url": public_review_url})
 
     try:
         result = publish_reply(
@@ -381,8 +391,16 @@ def api_publish():
             payload["reviewId"],
             reply_text,
         )
-        prefill_set_published(rid, result)
-        return _json({"ok": True, "result": result})
+        prefill_set_published(rid, {
+            "dry_run": False,
+            "result": result,
+            "public_review_url": public_review_url,
+        })
+        return _json({
+            "ok": True,
+            "result": result,
+            "public_review_url": public_review_url,
+        })
     except Exception as e:
         return _json({"ok": False, "error": str(e)}, 500)
 
