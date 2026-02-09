@@ -50,7 +50,7 @@ PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
 PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
 
 # --------------------------------------------------------
-# Defaults (🔥 FIX gegen jinja2 values undefined)
+# Defaults (wichtig für Jinja)
 # --------------------------------------------------------
 
 def default_values() -> Dict[str, str]:
@@ -219,6 +219,7 @@ def index():
 
     publish_ready = False
     publish_missing: List[str] = []
+    google_check_url = None
 
     if rid:
         row = prefill_get_row(rid)
@@ -241,6 +242,9 @@ def index():
                     publish_missing.append(k)
             publish_ready = not publish_missing
 
+            publish_result = row.get("publish_result") or {}
+            google_check_url = publish_result.get("public_review_url")
+
     return render_template(
         "index.html",
         values=default_values(),
@@ -254,6 +258,7 @@ def index():
         publish_ready=publish_ready,
         publish_missing=publish_missing,
         publish_dry_run=PUBLISH_DRY_RUN,
+        google_check_url=google_check_url,
     )
 
 # --------------------------------------------------------
@@ -333,10 +338,11 @@ def generate():
         publish_ready=False,
         publish_missing=["accountId", "locationId", "reviewId"],
         publish_dry_run=PUBLISH_DRY_RUN,
+        google_check_url=None,
     )
 
 # --------------------------------------------------------
-# API: Publish + Google-Check-Link
+# API: Publish + Google-Link
 # --------------------------------------------------------
 
 @app.post("/api/publish")
@@ -370,7 +376,6 @@ def api_publish():
     if _utf8_len(reply_text) > 4096:
         return _json({"ok": False, "error": "reply too long"}, 400)
 
-    # 🔗 Google-Check-Link
     public_review_url = None
     if payload.get("maps_place_url") and payload.get("reviewId"):
         public_review_url = f'{payload["maps_place_url"]}&reviewId={payload["reviewId"]}'
@@ -381,7 +386,10 @@ def api_publish():
         )
 
     if PUBLISH_DRY_RUN:
-        prefill_set_published(rid, {"dry_run": True, "public_review_url": public_review_url})
+        prefill_set_published(rid, {
+            "dry_run": True,
+            "public_review_url": public_review_url
+        })
         return _json({"ok": True, "dry_run": True, "public_review_url": public_review_url})
 
     try:
