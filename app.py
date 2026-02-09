@@ -9,7 +9,10 @@ from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
 
 import psycopg2
-from flask import Flask, render_template, request, jsonify, redirect, url_for, abort, make_response
+from flask import (
+    Flask, render_template, request, jsonify,
+    redirect, url_for, abort, make_response
+)
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -47,20 +50,23 @@ PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
 PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
 
 # --------------------------------------------------------
+# Defaults (🔥 DER WICHTIGE FIX)
+# --------------------------------------------------------
+
+def default_values() -> Dict[str, str]:
+    return {
+        "selectedTone": "friendly",
+        "corporateSignature": "Ihr NOVOTERGUM Team",
+        "contactEmail": "",
+        "languageMode": "de",
+    }
+
+# --------------------------------------------------------
 # Helpers
 # --------------------------------------------------------
 
-def _corsify(resp):
-    origin = request.headers.get("Origin")
-    if origin:
-        resp.headers["Access-Control-Allow-Origin"] = origin
-        resp.headers["Vary"] = "Origin"
-    resp.headers["Access-Control-Allow-Methods"] = "GET,POST,OPTIONS"
-    resp.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Publish-Password"
-    return resp
-
-def _json(data, status=200):
-    return _corsify(make_response(jsonify(data), status))
+def _utf8_len(s: str) -> int:
+    return len((s or "").encode("utf-8"))
 
 def _check_publish_password() -> bool:
     if not PUBLISH_PASSWORD:
@@ -68,21 +74,22 @@ def _check_publish_password() -> bool:
     candidate = (request.headers.get("X-Publish-Password") or "").strip()
     return hmac.compare_digest(candidate, PUBLISH_PASSWORD)
 
-def _utf8_len(s: str) -> int:
-    return len((s or "").encode("utf-8"))
+def must_env(name: str) -> str:
+    v = os.getenv(name, "").strip()
+    if not v:
+        raise RuntimeError(f"Missing env: {name}")
+    return v
 
-def compute_publish_ready(payload: Dict[str, Any]) -> Tuple[bool, List[str]]:
-    missing = []
-    for k in ("accountId", "locationId", "reviewId"):
-        if not str(payload.get(k) or "").strip():
-            missing.append(k)
-    return (len(missing) == 0), missing
+def _json(data, status=200):
+    return make_response(jsonify(data), status)
 
 # --------------------------------------------------------
 # Datenbank
 # --------------------------------------------------------
 
 def pg_connect():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL missing")
     return psycopg2.connect(DATABASE_URL, sslmode="prefer", connect_timeout=5)
 
 def prefill_init():
@@ -118,7 +125,8 @@ def prefill_get_row(rid: str) -> Optional[dict]:
     with pg_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT payload,generated,created_at,published_at,publish_result FROM prefill WHERE rid=%s",
+                "SELECT payload,generated,created_at,published_at,publish_result "
+                "FROM prefill WHERE rid=%s",
                 (rid,),
             )
             row = cur.fetchone()
@@ -156,6 +164,10 @@ def prefill_set_published(rid: str, result: dict):
 # --------------------------------------------------------
 
 def get_access_token() -> str:
+    must_env("GBP_CLIENT_ID")
+    must_env("GBP_CLIENT_SECRET")
+    must_env("GBP_REFRESH_TOKEN")
+
     body = urlencode({
         "client_id": GBP_CLIENT_ID,
         "client_secret": GBP_CLIENT_SECRET,
@@ -172,7 +184,8 @@ def get_access_token() -> str:
 
     with urlopen(req, timeout=20) as resp:
         raw = resp.read().decode("utf-8")
-    return json.loads(raw)["access_token"]
+    j = json.loads(raw)
+    return j["access_token"]
 
 def publish_reply(account_id: str, location_id: str, review_id: str, reply_text: str) -> dict:
     access_token = get_access_token()
@@ -195,55 +208,7 @@ def publish_reply(account_id: str, location_id: str, review_id: str, reply_text:
         return json.loads(raw) if raw else {"ok": True}
 
 # --------------------------------------------------------
-# API: Publish (FIX)
-# --------------------------------------------------------
-
-@app.route("/api/publish", methods=["POST", "OPTIONS"])
-def api_publish():
-    if request.method == "OPTIONS":
-        return _corsify(make_response("", 204))
-
-    if not ENABLE_PUBLISH:
-        return _json({"ok": False, "error": "publishing disabled"}, 403)
-
-    if not _check_publish_password():
-        return _json({"ok": False, "error": "unauthorized"}, 401)
-
-    rid = (request.args.get("rid") or "").strip()
-    body = request.get_json(silent=True) or {}
-    reply = (body.get("reply") or "").strip()
-
-    row = prefill_get_row(rid)
-    if not row:
-        return _json({"ok": False, "error": "rid not found"}, 404)
-
-    created_at = int(row.get("created_at") or 0)
-    if time.time() > created_at + PREFILL_TTL_SECONDS:
-        return _json({"ok": False, "error": "rid expired", "redirect": "/"}, 410)
-
-    payload = row["payload"]
-    ready, missing = compute_publish_ready(payload)
-    if not ready:
-        return _json({"ok": False, "error": "publish not ready", "missing": missing}, 400)
-
-    if _utf8_len(reply) > 4096:
-        return _json({"ok": False, "error": "reply too long"}, 400)
-
-    if PUBLISH_DRY_RUN:
-        prefill_set_published(rid, {"dry_run": True})
-        return _json({"ok": True, "dry_run": True})
-
-    result = publish_reply(
-        payload["accountId"],
-        payload["locationId"],
-        payload["reviewId"],
-        reply
-    )
-    prefill_set_published(rid, result)
-    return _json({"ok": True, "result": result})
-
-# --------------------------------------------------------
-# Index + Generator (unverändert)
+# Index
 # --------------------------------------------------------
 
 @app.route("/", methods=["GET"])
@@ -254,26 +219,32 @@ def index():
     location_title = ""
 
     publish_ready = False
-    publish_missing = []
+    publish_missing: List[str] = []
 
     if rid:
         row = prefill_get_row(rid)
-        if row:
+        if row and row.get("payload"):
             p = row["payload"]
             location_title = p.get("locationTitle") or ""
-            reviews = [{"review": p.get("review", ""), "rating": p.get("rating", "")}]
+
+            reviews = [{
+                "review": p.get("review", ""),
+                "rating": p.get("rating", ""),
+                "reviewType": "",
+                "salutation": "",
+            }]
+
             if row.get("generated"):
-                replies = row["generated"].get("replies")
-            publish_ready, publish_missing = compute_publish_ready(p)
+                replies = (row["generated"] or {}).get("replies")
+
+            for k in ("accountId", "locationId", "reviewId"):
+                if not p.get(k):
+                    publish_missing.append(k)
+            publish_ready = not publish_missing
 
     return render_template(
         "index.html",
-        values={
-            "selectedTone": "friendly",
-            "corporateSignature": "Ihr NOVOTERGUM Team",
-            "contactEmail": "",
-            "languageMode": "de",
-        },
+        values=default_values(),
         reviews=reviews,
         replies=replies,
         rid=rid,
@@ -286,24 +257,134 @@ def index():
         publish_dry_run=PUBLISH_DRY_RUN,
     )
 
+# --------------------------------------------------------
+# Generator
+# --------------------------------------------------------
+
+def _first_non_empty_pairs(reviews: List[str], ratings: List[str]):
+    pairs = []
+    for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
+        if (rev or "").strip():
+            rat = ratings[idx] if idx < len(ratings) else ""
+            pairs.append((rev.strip(), str(rat)))
+    return pairs
+
 @app.post("/generate")
 def generate():
+    rid = (request.form.get("rid") or "").strip()
+
     reviews = request.form.getlist("review")
     ratings = request.form.getlist("rating")
-    pairs = [(r, ratings[i] if i < len(ratings) else "") for i, r in enumerate(reviews) if r.strip()]
+    salutations = request.form.getlist("salutation")
+    review_types = request.form.getlist("reviewType")
+
+    values = default_values()
+    values.update({
+        "selectedTone": request.form.get("selectedTone", values["selectedTone"]),
+        "corporateSignature": request.form.get("corporateSignature", values["corporateSignature"]),
+        "contactEmail": request.form.get("contactEmail", ""),
+    })
+
+    pairs = _first_non_empty_pairs(reviews, ratings)
+    if rid and pairs:
+        pairs = [pairs[0]]
 
     replies_out = []
-    for rev, rating in pairs:
-        prompt = build_prompt({"review": rev, "rating": rating})
+
+    for idx, (rev, rating) in enumerate(pairs):
+        prompt = build_prompt({
+            "review": rev,
+            "rating": rating,
+            "reviewType": review_types[idx] if idx < len(review_types) else "",
+            "salutation": salutations[idx] if idx < len(salutations) else "",
+            "selectedTone": values["selectedTone"],
+            "corporateSignature": values["corporateSignature"],
+            "contactEmail": values["contactEmail"],
+            "languageMode": values["languageMode"],
+        })
+
         response = client.chat.completions.create(
             model="gpt-4.1-mini",
             messages=[{"role": "user", "content": prompt}],
         )
-        raw = response.choices[0].message.content.strip()
-        public, insights = split_public_and_insights(raw)
-        replies_out.append({"review": rev, "reply": public, "insights": insights})
 
-    return render_template("index.html", reviews=reviews, replies=replies_out)
+        raw = (response.choices[0].message.content or "").strip()
+        public, insights = split_public_and_insights(raw)
+
+        replies_out.append({
+            "review": rev,
+            "reply": public,
+            "insights": insights,
+        })
+
+    if rid:
+        prefill_set_generated(rid, {"replies": replies_out})
+        return redirect(url_for("index", rid=rid))
+
+    return render_template(
+        "index.html",
+        values=values,
+        reviews=[{"review": r} for r in reviews],
+        replies=replies_out,
+        rid="",
+        prefill_mode=False,
+        location_title="",
+        publish_enabled=ENABLE_PUBLISH,
+        publish_ui_enabled=PUBLISH_UI_ENABLED,
+        publish_ready=False,
+        publish_missing=["accountId", "locationId", "reviewId"],
+        publish_dry_run=PUBLISH_DRY_RUN,
+    )
+
+# --------------------------------------------------------
+# API: Publish
+# --------------------------------------------------------
+
+@app.post("/api/publish")
+def api_publish():
+    if not _check_publish_password():
+        return _json({"ok": False, "error": "unauthorized"}, 401)
+
+    if not ENABLE_PUBLISH:
+        return _json({"ok": False, "error": "publishing disabled"}, 403)
+
+    rid = (request.args.get("rid") or "").strip()
+    body = request.get_json(silent=True) or {}
+    reply_text = (body.get("reply") or "").strip()
+
+    if not rid:
+        return _json({"ok": False, "error": "missing rid"}, 400)
+
+    row = prefill_get_row(rid)
+    if not row or not row.get("payload"):
+        return _json({"ok": False, "error": "rid not found"}, 404)
+
+    payload = row["payload"]
+    for k in ("accountId", "locationId", "reviewId"):
+        if not payload.get(k):
+            return _json({"ok": False, "error": "publish not ready", "missing": k}, 400)
+
+    if not reply_text:
+        return _json({"ok": False, "error": "no reply text"}, 400)
+
+    if _utf8_len(reply_text) > 4096:
+        return _json({"ok": False, "error": "reply too long"}, 400)
+
+    if PUBLISH_DRY_RUN:
+        prefill_set_published(rid, {"dry_run": True})
+        return _json({"ok": True, "dry_run": True})
+
+    try:
+        result = publish_reply(
+            payload["accountId"],
+            payload["locationId"],
+            payload["reviewId"],
+            reply_text,
+        )
+        prefill_set_published(rid, result)
+        return _json({"ok": True, "result": result})
+    except Exception as e:
+        return _json({"ok": False, "error": str(e)}, 500)
 
 # --------------------------------------------------------
 # Start
