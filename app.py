@@ -16,6 +16,20 @@ from openai import OpenAI
 from dotenv import load_dotenv
 
 from generate_prompt import build_prompt, split_public_and_insights
+from flask_cors import CORS
+
+CORS(
+    app,
+    resources={
+        r"/api/review-by-rid": {
+            "origins": [
+                "https://ticket.novotergum.de"
+            ]
+        }
+    }
+)
+
+
 
 # --------------------------------------------------------
 # Grundkonfiguration
