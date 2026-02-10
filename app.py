@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import requests
 import secrets
 import hmac
 from typing import Dict, Optional, List
@@ -225,6 +226,31 @@ def api_review_by_rid():
         "reviewed_at": p.get("reviewed_at"),
         "locationTitle": p.get("locationTitle"),
     })
+
+# --------------------------------------------------------
+# ✅ API: PRECHECK PROXY (CORS-FREI)
+# --------------------------------------------------------
+
+@app.post("/api/precheck")
+def api_precheck_proxy():
+    data = request.get_json(silent=True) or {}
+    text = (data.get("review_text") or "").strip()
+
+    if len(text) < 40:
+        return jsonify({"error": "too_short"}), 400
+
+    try:
+        r = requests.post(
+            "https://novotergum-review-precheck-production.up.railway.app/review-classify",
+            json={"review_text": text},
+            timeout=12
+        )
+        return jsonify(r.json()), r.status_code
+    except Exception as e:
+        return jsonify({
+            "error": "precheck_failed",
+            "detail": str(e)
+        }), 502
 
 
 # --------------------------------------------------------
