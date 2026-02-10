@@ -12,7 +12,6 @@ from flask import (
     Flask, render_template, request, jsonify,
     redirect, url_for, abort, make_response
 )
-from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
 
@@ -31,35 +30,12 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 MAX_REVIEWS = 10
 PREFILL_SECRET = os.getenv("PREFILL_SECRET", "").strip()
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-PREFILL_TTL_SECONDS = int(os.getenv("PREFILL_TTL_SECONDS", "259200"))
 
 PUBLISH_PASSWORD = os.getenv("PUBLISH_PASSWORD", "").strip()
 
 GBP_CLIENT_ID = os.getenv("GBP_CLIENT_ID", "").strip()
 GBP_CLIENT_SECRET = os.getenv("GBP_CLIENT_SECRET", "").strip()
 GBP_REFRESH_TOKEN = os.getenv("GBP_REFRESH_TOKEN", "").strip()
-
-
-# --------------------------------------------------------
-# ✅ CORS – ABSOLUT KRITISCH
-# --------------------------------------------------------
-# ENV:
-# ALLOWED_ORIGINS=https://ticket.novotergum.de
-allowed_origins = [
-    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
-]
-
-CORS(
-    app,
-    resources={
-        r"/api/review-by-rid": {"origins": allowed_origins},
-        r"/api/prefill": {"origins": "*"},  # server-to-server
-        r"/api/publish": {"origins": allowed_origins},
-    },
-    supports_credentials=False,
-    methods=["GET", "POST", "PUT", "OPTIONS"],
-    allow_headers=["Content-Type", "X-Prefill-Secret", "X-Publish-Password"],
-)
 
 
 # --------------------------------------------------------
@@ -100,18 +76,10 @@ def _check_publish_password() -> bool:
     candidate = (request.headers.get("X-Publish-Password") or "").strip()
     return hmac.compare_digest(candidate, PUBLISH_PASSWORD)
 
-def must_env(name: str) -> str:
-    v = os.getenv(name, "").strip()
-    if not v:
-        raise RuntimeError(f"Missing env: {name}")
-    return v
-
 def _json(data, status=200):
     return make_response(jsonify(data), status)
 
 def _ensure_dict(v):
-    if v is None:
-        return {}
     if isinstance(v, dict):
         return v
     if isinstance(v, str):
@@ -119,7 +87,7 @@ def _ensure_dict(v):
             return json.loads(v)
         except Exception:
             return {}
-    return v
+    return {}
 
 
 # --------------------------------------------------------
@@ -159,25 +127,19 @@ def prefill_insert(payload: dict) -> str:
     return rid
 
 def prefill_get_row(rid: str) -> Optional[dict]:
-    if not rid:
-        return None
     with pg_connect() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT payload,generated,created_at,published_at,publish_result "
-                "FROM prefill WHERE rid=%s",
+                "SELECT payload,generated,publish_result FROM prefill WHERE rid=%s",
                 (rid,),
             )
             row = cur.fetchone()
             if not row:
                 return None
-            payload, generated, created_at, published_at, publish_result = row
             return {
-                "payload": _ensure_dict(payload),
-                "generated": _ensure_dict(generated),
-                "created_at": created_at,
-                "published_at": published_at,
-                "publish_result": _ensure_dict(publish_result),
+                "payload": _ensure_dict(row[0]),
+                "generated": _ensure_dict(row[1]),
+                "publish_result": _ensure_dict(row[2]),
             }
 
 def prefill_set_generated(rid: str, data: dict):
@@ -208,44 +170,18 @@ def api_prefill():
     if (request.headers.get("X-Prefill-Secret") or "").strip() != PREFILL_SECRET:
         abort(401)
 
-    data = request.get_json(force=True) or {}
-
-    payload = {
-        "review": data.get("review", ""),
-        "rating": data.get("rating", ""),
-        "reviewer": data.get("reviewer"),
-        "reviewed_at": data.get("reviewed_at"),
-        "accountId": data.get("accountId"),
-        "locationId": data.get("locationId"),
-        "reviewId": data.get("reviewId"),
-        "storeCode": data.get("storeCode"),
-        "locationTitle": data.get("locationTitle"),
-        "maps_uri": data.get("maps_uri"),
-        "new_review_uri": data.get("new_review_uri"),
-        "place_id": data.get("place_id"),
-        "maps_place_url": data.get("maps_place_url"),
-    }
-
+    payload = request.get_json(force=True) or {}
     rid = prefill_insert(payload)
     return jsonify({"rid": rid})
 
 
-# --------------------------------------------------------
-# ✅ API: REVIEW BY RID (Prefill-Endpunkt)
-# --------------------------------------------------------
-
 @app.get("/api/review-by-rid")
 def api_review_by_rid():
     rid = (request.args.get("rid") or "").strip()
-    if not rid:
-        return jsonify({"error": "missing rid"}), 400
-
     row = prefill_get_row(rid)
-    if not row or not row.get("payload"):
+    if not row:
         return jsonify({"error": "not found"}), 404
-
     p = row["payload"]
-
     return jsonify({
         "review_text": p.get("review", ""),
         "rating": p.get("rating", ""),
@@ -256,59 +192,74 @@ def api_review_by_rid():
 
 
 # --------------------------------------------------------
-# Index
+# Google OAuth + Publish
 # --------------------------------------------------------
 
-@app.route("/", methods=["GET"])
-def index():
-    rid = (request.args.get("rid") or "").strip()
-    reviews, replies = [{}], None
-    prefill_mode = bool(rid)
-    location_title = ""
+def get_access_token() -> str:
+    body = urlencode({
+        "client_id": GBP_CLIENT_ID,
+        "client_secret": GBP_CLIENT_SECRET,
+        "refresh_token": GBP_REFRESH_TOKEN,
+        "grant_type": "refresh_token",
+    }).encode("utf-8")
 
-    publish_ready = False
-    publish_missing: List[str] = []
-    google_check_url = None
-
-    if rid:
-        row = prefill_get_row(rid)
-        if row and row.get("payload"):
-            p = row["payload"]
-            location_title = p.get("locationTitle") or ""
-
-            reviews = [{
-                "review": p.get("review", ""),
-                "rating": p.get("rating", ""),
-                "reviewType": "",
-                "salutation": "",
-            }]
-
-            if row.get("generated"):
-                replies = (row["generated"] or {}).get("replies")
-
-            for k in ("accountId", "locationId", "reviewId"):
-                if not p.get(k):
-                    publish_missing.append(k)
-            publish_ready = not publish_missing
-
-            publish_result = row.get("publish_result") or {}
-            google_check_url = publish_result.get("public_review_url")
-
-    return render_template(
-        "index.html",
-        values=default_values(),
-        reviews=reviews,
-        replies=replies,
-        rid=rid,
-        prefill_mode=prefill_mode,
-        location_title=location_title,
-        publish_enabled=ENABLE_PUBLISH,
-        publish_ui_enabled=PUBLISH_UI_ENABLED,
-        publish_ready=publish_ready,
-        publish_missing=publish_missing,
-        publish_dry_run=PUBLISH_DRY_RUN,
-        google_check_url=google_check_url,
+    req = Request(
+        "https://oauth2.googleapis.com/token",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
+
+    with urlopen(req, timeout=20) as resp:
+        return json.loads(resp.read().decode("utf-8"))["access_token"]
+
+def publish_reply(account_id, location_id, review_id, reply_text):
+    access_token = get_access_token()
+    url = f"https://mybusiness.googleapis.com/v4/accounts/{account_id}/locations/{location_id}/reviews/{review_id}/reply"
+
+    body = json.dumps({"comment": reply_text}, ensure_ascii=False).encode("utf-8")
+    req = Request(
+        url,
+        data=body,
+        method="PUT",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    with urlopen(req, timeout=25) as resp:
+        return json.loads(resp.read().decode("utf-8") or "{}")
+
+
+@app.post("/api/publish")
+def api_publish():
+    if not _check_publish_password():
+        return _json({"ok": False, "error": "unauthorized"}, 401)
+
+    rid = (request.args.get("rid") or "").strip()
+    body = request.get_json(silent=True) or {}
+    reply_text = (body.get("reply") or "").strip()
+
+    row = prefill_get_row(rid)
+    if not row:
+        return _json({"ok": False, "error": "rid not found"}, 404)
+
+    p = row["payload"]
+
+    if PUBLISH_DRY_RUN:
+        prefill_set_published(rid, {"dry_run": True})
+        return _json({"ok": True, "dry_run": True})
+
+    result = publish_reply(
+        p["accountId"],
+        p["locationId"],
+        p["reviewId"],
+        reply_text,
+    )
+
+    prefill_set_published(rid, result)
+    return _json({"ok": True, "result": result})
 
 
 # --------------------------------------------------------
