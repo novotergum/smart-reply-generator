@@ -3,10 +3,9 @@ import json
 import time
 import secrets
 import hmac
-from typing import Any, Dict, Optional, Tuple, List
+from typing import Dict, Optional, List
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError, URLError
 
 import psycopg2
 from flask import (
@@ -83,6 +82,19 @@ def must_env(name: str) -> str:
 def _json(data, status=200):
     return make_response(jsonify(data), status)
 
+def _ensure_dict(v):
+    """psycopg2 kann JSONB je nach Setup als dict oder str liefern."""
+    if v is None:
+        return {}
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str):
+        try:
+            return json.loads(v)
+        except Exception:
+            return {}
+    return v
+
 # --------------------------------------------------------
 # Datenbank
 # --------------------------------------------------------
@@ -134,11 +146,11 @@ def prefill_get_row(rid: str) -> Optional[dict]:
                 return None
             payload, generated, created_at, published_at, publish_result = row
             return {
-                "payload": payload,
-                "generated": generated,
+                "payload": _ensure_dict(payload),
+                "generated": _ensure_dict(generated),
                 "created_at": created_at,
                 "published_at": published_at,
-                "publish_result": publish_result,
+                "publish_result": _ensure_dict(publish_result),
             }
 
 def prefill_set_generated(rid: str, data: dict):
@@ -158,6 +170,36 @@ def prefill_set_published(rid: str, result: dict):
                 (int(time.time()), json.dumps(result, ensure_ascii=False), rid),
             )
         conn.commit()
+
+# --------------------------------------------------------
+# API: PREFILL  ✅ (Fix für Webhook / GitHub Actions)
+# --------------------------------------------------------
+
+@app.post("/api/prefill")
+def api_prefill():
+    if (request.headers.get("X-Prefill-Secret") or "").strip() != PREFILL_SECRET:
+        abort(401)
+
+    data = request.get_json(force=True) or {}
+
+    payload = {
+        "review": (data.get("review") or ""),
+        "rating": (data.get("rating") or ""),
+        "reviewer": data.get("reviewer"),
+        "reviewed_at": data.get("reviewed_at"),
+        "accountId": data.get("accountId"),
+        "locationId": data.get("locationId"),
+        "reviewId": data.get("reviewId"),
+        "storeCode": data.get("storeCode"),
+        "locationTitle": data.get("locationTitle"),
+        "maps_uri": data.get("maps_uri"),
+        "new_review_uri": data.get("new_review_uri"),
+        "place_id": data.get("place_id"),
+        "maps_place_url": data.get("maps_place_url"),
+    }
+
+    rid = prefill_insert(payload)
+    return jsonify({"rid": rid})
 
 # --------------------------------------------------------
 # Google OAuth + Publish
