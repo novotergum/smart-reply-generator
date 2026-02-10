@@ -13,18 +13,26 @@ from flask import (
     Flask, render_template, request, jsonify,
     redirect, url_for, abort, make_response
 )
+from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
 
 from generate_prompt import build_prompt, split_public_and_insights
 
 
+
 # --------------------------------------------------------
 # Grundkonfiguration
 # --------------------------------------------------------
-
 load_dotenv()
 app = Flask(__name__)
+
+# ✅ CORS – erlaubt ALLE externen Frontends für /api/*
+CORS(
+    app,
+    resources={r"/api/*": {"origins": "*"}},
+    supports_credentials=False
+)
 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
