@@ -202,6 +202,31 @@ def api_prefill():
     return jsonify({"rid": rid})
 
 # --------------------------------------------------------
+# ✅ API: REVIEW BY RID (FEHLTE!)
+# --------------------------------------------------------
+
+@app.get("/api/review-by-rid")
+def api_review_by_rid():
+    rid = (request.args.get("rid") or "").strip()
+    if not rid:
+        return jsonify({"error": "missing rid"}), 400
+
+    row = prefill_get_row(rid)
+    if not row or not row.get("payload"):
+        return jsonify({"error": "not found"}), 404
+
+    p = row["payload"]
+
+    return jsonify({
+        "review_text": p.get("review", ""),
+        "rating": p.get("rating", ""),
+        "reviewer": p.get("reviewer"),
+        "reviewed_at": p.get("reviewed_at"),
+        "locationTitle": p.get("locationTitle"),
+    })
+
+
+# --------------------------------------------------------
 # Google OAuth + Publish
 # --------------------------------------------------------
 
