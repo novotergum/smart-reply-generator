@@ -12,23 +12,11 @@ from flask import (
     Flask, render_template, request, jsonify,
     redirect, url_for, abort, make_response
 )
+from flask_cors import CORS
 from openai import OpenAI
 from dotenv import load_dotenv
 
 from generate_prompt import build_prompt, split_public_and_insights
-from flask_cors import CORS
-
-CORS(
-    app,
-    resources={
-        r"/api/review-by-rid": {
-            "origins": [
-                "https://ticket.novotergum.de"
-            ]
-        }
-    }
-)
-
 
 
 # --------------------------------------------------------
@@ -52,6 +40,30 @@ GBP_CLIENT_SECRET = os.getenv("GBP_CLIENT_SECRET", "").strip()
 GBP_REFRESH_TOKEN = os.getenv("GBP_REFRESH_TOKEN", "").strip()
 
 # --------------------------------------------------------
+# CORS (WICHTIG für ticket.novotergum.de -> Railway API)
+# --------------------------------------------------------
+# Beispiel:
+# ALLOWED_ORIGINS=https://ticket.novotergum.de,https://ticket-staging.novotergum.de
+allowed_origins = [
+    o.strip() for o in (os.getenv("ALLOWED_ORIGINS", "")).split(",") if o.strip()
+]
+
+# Wenn du ALLOWED_ORIGINS nicht setzt, bleibt es dicht (sicherer Default)
+cors_resources = {
+    r"/api/review-by-rid": {"origins": allowed_origins},
+    r"/api/prefill": {"origins": "*"},  # server-to-server, falls nötig
+    r"/api/publish": {"origins": allowed_origins},
+}
+
+CORS(
+    app,
+    resources=cors_resources,
+    supports_credentials=False,
+    methods=["GET", "POST", "PUT", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Prefill-Secret", "X-Publish-Password"],
+)
+
+# --------------------------------------------------------
 # Feature Flags
 # --------------------------------------------------------
 
@@ -61,6 +73,7 @@ def env_truthy(name: str) -> bool:
 ENABLE_PUBLISH = env_truthy("ENABLE_PUBLISH")
 PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
 PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
+
 
 # --------------------------------------------------------
 # Defaults (wichtig für Jinja)
@@ -73,6 +86,7 @@ def default_values() -> Dict[str, str]:
         "contactEmail": "",
         "languageMode": "de",
     }
+
 
 # --------------------------------------------------------
 # Helpers
@@ -108,6 +122,7 @@ def _ensure_dict(v):
         except Exception:
             return {}
     return v
+
 
 # --------------------------------------------------------
 # Datenbank
@@ -185,6 +200,7 @@ def prefill_set_published(rid: str, result: dict):
             )
         conn.commit()
 
+
 # --------------------------------------------------------
 # API: PREFILL  ✅ (Fix für Webhook / GitHub Actions)
 # --------------------------------------------------------
@@ -215,8 +231,9 @@ def api_prefill():
     rid = prefill_insert(payload)
     return jsonify({"rid": rid})
 
+
 # --------------------------------------------------------
-# ✅ API: REVIEW BY RID (FEHLTE!)
+# ✅ API: REVIEW BY RID (für ticket.novotergum.de Prefill)
 # --------------------------------------------------------
 
 @app.get("/api/review-by-rid")
@@ -237,6 +254,10 @@ def api_review_by_rid():
         "reviewer": p.get("reviewer"),
         "reviewed_at": p.get("reviewed_at"),
         "locationTitle": p.get("locationTitle"),
+        # Optional: wenn du später die Form-Felder auto-füllen willst:
+        "maps_place_url": p.get("maps_place_url"),
+        "place_id": p.get("place_id"),
+        "reviewId": p.get("reviewId"),
     })
 
 
@@ -286,6 +307,7 @@ def publish_reply(account_id: str, location_id: str, review_id: str, reply_text:
     with urlopen(req, timeout=25) as resp:
         raw = resp.read().decode("utf-8")
         return json.loads(raw) if raw else {"ok": True}
+
 
 # --------------------------------------------------------
 # Index
@@ -341,6 +363,7 @@ def index():
         publish_dry_run=PUBLISH_DRY_RUN,
         google_check_url=google_check_url,
     )
+
 
 # --------------------------------------------------------
 # Generator
@@ -422,6 +445,7 @@ def generate():
         google_check_url=None,
     )
 
+
 # --------------------------------------------------------
 # API: Publish + Google-Link
 # --------------------------------------------------------
@@ -492,6 +516,7 @@ def api_publish():
         })
     except Exception as e:
         return _json({"ok": False, "error": str(e)}, 500)
+
 
 # --------------------------------------------------------
 # Start
