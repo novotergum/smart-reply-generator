@@ -39,29 +39,28 @@ GBP_CLIENT_ID = os.getenv("GBP_CLIENT_ID", "").strip()
 GBP_CLIENT_SECRET = os.getenv("GBP_CLIENT_SECRET", "").strip()
 GBP_REFRESH_TOKEN = os.getenv("GBP_REFRESH_TOKEN", "").strip()
 
-# --------------------------------------------------------
-# CORS (WICHTIG für ticket.novotergum.de -> Railway API)
-# --------------------------------------------------------
-# Beispiel:
-# ALLOWED_ORIGINS=https://ticket.novotergum.de,https://ticket-staging.novotergum.de
-allowed_origins = [
-    o.strip() for o in (os.getenv("ALLOWED_ORIGINS", "")).split(",") if o.strip()
-]
 
-# Wenn du ALLOWED_ORIGINS nicht setzt, bleibt es dicht (sicherer Default)
-cors_resources = {
-    r"/api/review-by-rid": {"origins": allowed_origins},
-    r"/api/prefill": {"origins": "*"},  # server-to-server, falls nötig
-    r"/api/publish": {"origins": allowed_origins},
-}
+# --------------------------------------------------------
+# ✅ CORS – ABSOLUT KRITISCH
+# --------------------------------------------------------
+# ENV:
+# ALLOWED_ORIGINS=https://ticket.novotergum.de
+allowed_origins = [
+    o.strip() for o in os.getenv("ALLOWED_ORIGINS", "").split(",") if o.strip()
+]
 
 CORS(
     app,
-    resources=cors_resources,
+    resources={
+        r"/api/review-by-rid": {"origins": allowed_origins},
+        r"/api/prefill": {"origins": "*"},  # server-to-server
+        r"/api/publish": {"origins": allowed_origins},
+    },
     supports_credentials=False,
     methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Content-Type", "X-Prefill-Secret", "X-Publish-Password"],
 )
+
 
 # --------------------------------------------------------
 # Feature Flags
@@ -76,7 +75,7 @@ PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
 
 
 # --------------------------------------------------------
-# Defaults (wichtig für Jinja)
+# Defaults
 # --------------------------------------------------------
 
 def default_values() -> Dict[str, str]:
@@ -111,7 +110,6 @@ def _json(data, status=200):
     return make_response(jsonify(data), status)
 
 def _ensure_dict(v):
-    """psycopg2 kann JSONB je nach Setup als dict oder str liefern."""
     if v is None:
         return {}
     if isinstance(v, dict):
@@ -202,7 +200,7 @@ def prefill_set_published(rid: str, result: dict):
 
 
 # --------------------------------------------------------
-# API: PREFILL  ✅ (Fix für Webhook / GitHub Actions)
+# API: PREFILL
 # --------------------------------------------------------
 
 @app.post("/api/prefill")
@@ -213,8 +211,8 @@ def api_prefill():
     data = request.get_json(force=True) or {}
 
     payload = {
-        "review": (data.get("review") or ""),
-        "rating": (data.get("rating") or ""),
+        "review": data.get("review", ""),
+        "rating": data.get("rating", ""),
         "reviewer": data.get("reviewer"),
         "reviewed_at": data.get("reviewed_at"),
         "accountId": data.get("accountId"),
@@ -233,7 +231,7 @@ def api_prefill():
 
 
 # --------------------------------------------------------
-# ✅ API: REVIEW BY RID (für ticket.novotergum.de Prefill)
+# ✅ API: REVIEW BY RID (Prefill-Endpunkt)
 # --------------------------------------------------------
 
 @app.get("/api/review-by-rid")
@@ -254,59 +252,7 @@ def api_review_by_rid():
         "reviewer": p.get("reviewer"),
         "reviewed_at": p.get("reviewed_at"),
         "locationTitle": p.get("locationTitle"),
-        # Optional: wenn du später die Form-Felder auto-füllen willst:
-        "maps_place_url": p.get("maps_place_url"),
-        "place_id": p.get("place_id"),
-        "reviewId": p.get("reviewId"),
     })
-
-
-# --------------------------------------------------------
-# Google OAuth + Publish
-# --------------------------------------------------------
-
-def get_access_token() -> str:
-    must_env("GBP_CLIENT_ID")
-    must_env("GBP_CLIENT_SECRET")
-    must_env("GBP_REFRESH_TOKEN")
-
-    body = urlencode({
-        "client_id": GBP_CLIENT_ID,
-        "client_secret": GBP_CLIENT_SECRET,
-        "refresh_token": GBP_REFRESH_TOKEN,
-        "grant_type": "refresh_token",
-    }).encode("utf-8")
-
-    req = Request(
-        "https://oauth2.googleapis.com/token",
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-
-    with urlopen(req, timeout=20) as resp:
-        raw = resp.read().decode("utf-8")
-    return json.loads(raw)["access_token"]
-
-def publish_reply(account_id: str, location_id: str, review_id: str, reply_text: str) -> dict:
-    access_token = get_access_token()
-    name = f"accounts/{account_id}/locations/{location_id}/reviews/{review_id}"
-    url = f"https://mybusiness.googleapis.com/v4/{name}/reply"
-
-    body = json.dumps({"comment": reply_text}, ensure_ascii=False).encode("utf-8")
-    req = Request(
-        url,
-        data=body,
-        method="PUT",
-        headers={
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-        },
-    )
-
-    with urlopen(req, timeout=25) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {"ok": True}
 
 
 # --------------------------------------------------------
@@ -363,159 +309,6 @@ def index():
         publish_dry_run=PUBLISH_DRY_RUN,
         google_check_url=google_check_url,
     )
-
-
-# --------------------------------------------------------
-# Generator
-# --------------------------------------------------------
-
-def _first_non_empty_pairs(reviews: List[str], ratings: List[str]):
-    pairs = []
-    for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
-        if (rev or "").strip():
-            rat = ratings[idx] if idx < len(ratings) else ""
-            pairs.append((rev.strip(), str(rat)))
-    return pairs
-
-@app.post("/generate")
-def generate():
-    rid = (request.form.get("rid") or "").strip()
-
-    reviews = request.form.getlist("review")
-    ratings = request.form.getlist("rating")
-    salutations = request.form.getlist("salutation")
-    review_types = request.form.getlist("reviewType")
-
-    values = default_values()
-    values.update({
-        "selectedTone": request.form.get("selectedTone", values["selectedTone"]),
-        "corporateSignature": request.form.get("corporateSignature", values["corporateSignature"]),
-        "contactEmail": request.form.get("contactEmail", ""),
-    })
-
-    pairs = _first_non_empty_pairs(reviews, ratings)
-    if rid and pairs:
-        pairs = [pairs[0]]
-
-    replies_out = []
-
-    for idx, (rev, rating) in enumerate(pairs):
-        prompt = build_prompt({
-            "review": rev,
-            "rating": rating,
-            "reviewType": review_types[idx] if idx < len(review_types) else "",
-            "salutation": salutations[idx] if idx < len(salutations) else "",
-            "selectedTone": values["selectedTone"],
-            "corporateSignature": values["corporateSignature"],
-            "contactEmail": values["contactEmail"],
-            "languageMode": values["languageMode"],
-        })
-
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        raw = (response.choices[0].message.content or "").strip()
-        public, insights = split_public_and_insights(raw)
-
-        replies_out.append({
-            "review": rev,
-            "reply": public,
-            "insights": insights,
-        })
-
-    if rid:
-        prefill_set_generated(rid, {"replies": replies_out})
-        return redirect(url_for("index", rid=rid))
-
-    return render_template(
-        "index.html",
-        values=values,
-        reviews=[{"review": r} for r in reviews],
-        replies=replies_out,
-        rid="",
-        prefill_mode=False,
-        location_title="",
-        publish_enabled=ENABLE_PUBLISH,
-        publish_ui_enabled=PUBLISH_UI_ENABLED,
-        publish_ready=False,
-        publish_missing=["accountId", "locationId", "reviewId"],
-        publish_dry_run=PUBLISH_DRY_RUN,
-        google_check_url=None,
-    )
-
-
-# --------------------------------------------------------
-# API: Publish + Google-Link
-# --------------------------------------------------------
-
-@app.post("/api/publish")
-def api_publish():
-    if not _check_publish_password():
-        return _json({"ok": False, "error": "unauthorized"}, 401)
-
-    if not ENABLE_PUBLISH:
-        return _json({"ok": False, "error": "publishing disabled"}, 403)
-
-    rid = (request.args.get("rid") or "").strip()
-    body = request.get_json(silent=True) or {}
-    reply_text = (body.get("reply") or "").strip()
-
-    if not rid:
-        return _json({"ok": False, "error": "missing rid"}, 400)
-
-    row = prefill_get_row(rid)
-    if not row or not row.get("payload"):
-        return _json({"ok": False, "error": "rid not found"}, 404)
-
-    payload = row["payload"]
-
-    for k in ("accountId", "locationId", "reviewId"):
-        if not payload.get(k):
-            return _json({"ok": False, "error": "publish not ready", "missing": k}, 400)
-
-    if not reply_text:
-        return _json({"ok": False, "error": "no reply text"}, 400)
-
-    if _utf8_len(reply_text) > 4096:
-        return _json({"ok": False, "error": "reply too long"}, 400)
-
-    public_review_url = None
-    if payload.get("maps_place_url") and payload.get("reviewId"):
-        public_review_url = f'{payload["maps_place_url"]}&reviewId={payload["reviewId"]}'
-    elif payload.get("place_id") and payload.get("reviewId"):
-        public_review_url = (
-            "https://www.google.com/maps/place/?q=place_id="
-            f'{payload["place_id"]}&reviewId={payload["reviewId"]}'
-        )
-
-    if PUBLISH_DRY_RUN:
-        prefill_set_published(rid, {
-            "dry_run": True,
-            "public_review_url": public_review_url
-        })
-        return _json({"ok": True, "dry_run": True, "public_review_url": public_review_url})
-
-    try:
-        result = publish_reply(
-            payload["accountId"],
-            payload["locationId"],
-            payload["reviewId"],
-            reply_text,
-        )
-        prefill_set_published(rid, {
-            "dry_run": False,
-            "result": result,
-            "public_review_url": public_review_url,
-        })
-        return _json({
-            "ok": True,
-            "result": result,
-            "public_review_url": public_review_url,
-        })
-    except Exception as e:
-        return _json({"ok": False, "error": str(e)}, 500)
 
 
 # --------------------------------------------------------
