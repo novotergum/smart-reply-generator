@@ -30,7 +30,6 @@
     h1{font-size:22px;margin:0 0 4px;}
     .lead{margin:0 0 20px;font-size:14px;color:var(--muted);}
 
-    /* ✅ Standort-Badge */
     .location-badge{
       font-size:13px;
       font-weight:600;
@@ -215,8 +214,16 @@
       <div>
         <div class="field">
           <label for="corporateSignature">Signatur</label>
-          <input id="corporateSignature" name="corporateSignature"
-                 value="{{ values.corporateSignature or 'Ihr NOVOTERGUM Team' }}">
+          <select id="corporateSignature" name="corporateSignature">
+            <option value="Ihr NOVOTERGUM Team"
+              {% if (values.corporateSignature or 'Ihr NOVOTERGUM Team') == 'Ihr NOVOTERGUM Team' %}selected{% endif %}>
+              Ihr NOVOTERGUM Team
+            </option>
+            <option value="Ihr Berg Therapie Team"
+              {% if values.corporateSignature == 'Ihr Berg Therapie Team' %}selected{% endif %}>
+              Ihr Berg Therapie Team
+            </option>
+          </select>
         </div>
 
         <div class="field">
@@ -257,7 +264,6 @@
       </div>
 
       {% if loop.first and publish_ui_enabled and rid %}
-        {# Zusätzlich idiotensicher direkt am Publishing-Block #}
         <div class="notice" style="margin-top:10px;">
           <strong>Hinweis (intern):</strong> Das <strong>Publish-Passwort</strong> ist identisch mit dem Passwort für das <strong>Regio Dashboard</strong>.
         </div>
@@ -486,13 +492,12 @@ document.addEventListener('DOMContentLoaded', function () {
   }
 
   // -------------------------
-  // Publish Button (Variante A: Publish-Passwort)
+  // Publish Button
   // -------------------------
   async function getPublishPasswordOnce() {
     const key = "publishPassword_v1";
     let s = sessionStorage.getItem(key) || "";
     if (s) return s;
-    // Prompt bleibt, aber die UI zeigt jetzt idiotensicher, welches Passwort gemeint ist.
     s = prompt("Publish-Passwort (wie Regio Dashboard):") || "";
     s = s.trim();
     if (s) sessionStorage.setItem(key, s);
@@ -514,20 +519,18 @@ document.addEventListener('DOMContentLoaded', function () {
       },
       body: JSON.stringify({ rid, reply, overwrite })
     });
-  
+
     const txt = await res.text();
     let j = null;
     try { j = JSON.parse(txt); } catch {}
-  
-    // 🔁 FIX: RID abgelaufen → automatisch neu laden
+
     if (res.status === 410 && j && j.redirect) {
       window.location.href = j.redirect;
       return;
     }
-  
-    return { res, txt, j };
-  } // ✅ DIESE KLAMMER HAT GEFEHLT
 
+    return { res, txt, j };
+  }
 
   if (publishBtn) {
     publishBtn.addEventListener('click', async function () {
@@ -557,14 +560,10 @@ document.addEventListener('DOMContentLoaded', function () {
         publishBtn.disabled = true;
         if (publishStatus) publishStatus.textContent = "Publishing läuft …";
 
-        // 1) Versuch ohne overwrite
         let out = await doPublish({ rid, password, reply, overwrite: false });
 
-                // 🔁 WICHTIG: doPublish() kann bei 410 undefined zurückgeben (Redirect)
-        // → dann HIER abbrechen, sonst crasht out.res
         if (!out) return;
-        
-        // 409 = already_replied → UX: Hinweis + Retry mit overwrite
+
         if (out.res.status === 409 && out.j && out.j.error === "already_replied") {
           const existing = out.j.existingReply || "";
           const updatedAt = out.j.existingReplyUpdatedAt || "";
