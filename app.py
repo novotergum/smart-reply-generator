@@ -409,14 +409,19 @@ def generate():
             "languageMode": values["languageMode"],
         })
 
-        response = client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=1024,
-            system="Du bist das Kommunikationsteam von NOVOTERGUM ...",  # ersten Block aus prompt.xml
-            messages=[{"role": "user", "content": prompt}],
-        )
+    response = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=1024,
+        system=(
+            "Du bist das Kommunikationsteam von NOVOTERGUM, einer physiotherapeutischen Praxisgruppe in Deutschland. "
+            "Du verfasst öffentliche Antworten auf Online-Bewertungen im Namen der jeweiligen Praxis. "
+            "Schreibe immer höflich, wertschätzend und professionell. "
+            "Klingt wie ein echter Mensch aus dem Team – kein Corporate-Sprech, keine KI-Floskeln."
+        ),
+        messages=[{"role": "user", "content": prompt}],
+    )
 
-        raw = (response.content[0].text or "").strip()
+    	raw = (response.content[0].text or "").strip()
         public, insights = split_public_and_insights(raw)
 
         replies_out.append({
