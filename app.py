@@ -421,7 +421,7 @@ def generate():
         messages=[{"role": "user", "content": prompt}],
     )
 
-    	raw = (response.content[0].text or "").strip()
+    raw = (response.content[0].text or "").strip()
         public, insights = split_public_and_insights(raw)
 
         replies_out.append({
