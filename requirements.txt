@@ -2,6 +2,6 @@ Flask
 flask-cors
 gunicorn
 python-dotenv
-openai
+anthropic>=0.25.0
 psycopg2-binary
 requests
