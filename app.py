@@ -14,7 +14,7 @@ from flask import (
     redirect, url_for, abort, make_response
 )
 from flask_cors import CORS
-from openai import OpenAI
+import anthropic
 from dotenv import load_dotenv
 
 from generate_prompt import build_prompt, split_public_and_insights
@@ -34,7 +34,7 @@ CORS(
     supports_credentials=False
 )
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 MAX_REVIEWS = 10
 PREFILL_SECRET = os.getenv("PREFILL_SECRET", "").strip()
