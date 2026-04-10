@@ -26,6 +26,7 @@ from generate_prompt import build_prompt, split_public_and_insights
 load_dotenv()
 app = Flask(__name__)
 
+# CORS - erlaubt ALLE externen Frontends fuer /api/*
 CORS(
     app,
     resources={r"/api/*": {"origins": "*"}},
@@ -257,7 +258,6 @@ def api_precheck_proxy():
             "detail": str(e)
         }), 502
 
-
 # --------------------------------------------------------
 # Google OAuth + Publish
 # --------------------------------------------------------
@@ -371,6 +371,7 @@ def _first_non_empty_pairs(reviews: List[str], ratings: List[str]):
             rat = ratings[idx] if idx < len(ratings) else ""
             pairs.append((rev.strip(), str(rat)))
     return pairs
+
 
 @app.post("/generate")
 def generate():
