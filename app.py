@@ -412,6 +412,7 @@ def generate():
         response = client.messages.create(
             model="claude-sonnet-4-5",
             max_tokens=1024,
+            system="Du bist das Kommunikationsteam von NOVOTERGUM ...",  # ersten Block aus prompt.xml
             messages=[{"role": "user", "content": prompt}],
         )
 
