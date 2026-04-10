@@ -409,12 +409,13 @@ def generate():
             "languageMode": values["languageMode"],
         })
 
-        response = client.chat.completions.create(
-            model="gpt-4.1-mini",
+        response = client.messages.create(
+            model="claude-sonnet-4-5",
+            max_tokens=1024,
             messages=[{"role": "user", "content": prompt}],
         )
 
-        raw = (response.choices[0].message.content or "").strip()
+        raw = (response.content[0].text or "").strip()
         public, insights = split_public_and_insights(raw)
 
         replies_out.append({
