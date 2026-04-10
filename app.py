@@ -20,14 +20,12 @@ from dotenv import load_dotenv
 from generate_prompt import build_prompt, split_public_and_insights
 
 
-
 # --------------------------------------------------------
 # Grundkonfiguration
 # --------------------------------------------------------
 load_dotenv()
 app = Flask(__name__)
 
-# ✅ CORS – erlaubt ALLE externen Frontends für /api/*
 CORS(
     app,
     resources={r"/api/*": {"origins": "*"}},
@@ -59,7 +57,7 @@ PUBLISH_UI_ENABLED = env_truthy("PUBLISH_UI_ENABLED")
 PUBLISH_DRY_RUN = env_truthy("PUBLISH_DRY_RUN")
 
 # --------------------------------------------------------
-# Defaults (wichtig für Jinja)
+# Defaults
 # --------------------------------------------------------
 
 def default_values() -> Dict[str, str]:
@@ -93,7 +91,6 @@ def _json(data, status=200):
     return make_response(jsonify(data), status)
 
 def _ensure_dict(v):
-    """psycopg2 kann JSONB je nach Setup als dict oder str liefern."""
     if v is None:
         return {}
     if isinstance(v, dict):
@@ -182,7 +179,7 @@ def prefill_set_published(rid: str, result: dict):
         conn.commit()
 
 # --------------------------------------------------------
-# API: PREFILL  ✅ (Fix für Webhook / GitHub Actions)
+# API: PREFILL
 # --------------------------------------------------------
 
 @app.post("/api/prefill")
@@ -212,7 +209,7 @@ def api_prefill():
     return jsonify({"rid": rid})
 
 # --------------------------------------------------------
-# ✅ API: REVIEW BY RID (FEHLTE!)
+# API: REVIEW BY RID
 # --------------------------------------------------------
 
 @app.get("/api/review-by-rid")
@@ -236,7 +233,7 @@ def api_review_by_rid():
     })
 
 # --------------------------------------------------------
-# ✅ API: PRECHECK PROXY (CORS-FREI)
+# API: PRECHECK PROXY
 # --------------------------------------------------------
 
 @app.post("/api/precheck")
@@ -312,6 +309,69 @@ def publish_reply(account_id: str, location_id: str, review_id: str, reply_text:
 # Index
 # --------------------------------------------------------
 
+@app.route("/", methods=["GET"])
+def index():
+    rid = (request.args.get("rid") or "").strip()
+    reviews, replies = [{}], None
+    prefill_mode = bool(rid)
+    location_title = ""
+
+    publish_ready = False
+    publish_missing: List[str] = []
+    google_check_url = None
+
+    if rid:
+        row = prefill_get_row(rid)
+        if row and row.get("payload"):
+            p = row["payload"]
+            location_title = p.get("locationTitle") or ""
+
+            reviews = [{
+                "review": p.get("review", ""),
+                "rating": p.get("rating", ""),
+                "reviewType": "",
+                "salutation": "",
+            }]
+
+            if row.get("generated"):
+                replies = (row["generated"] or {}).get("replies")
+
+            for k in ("accountId", "locationId", "reviewId"):
+                if not p.get(k):
+                    publish_missing.append(k)
+            publish_ready = not publish_missing
+
+            publish_result = row.get("publish_result") or {}
+            google_check_url = publish_result.get("public_review_url")
+
+    return render_template(
+        "index.html",
+        values=default_values(),
+        reviews=reviews,
+        replies=replies,
+        rid=rid,
+        prefill_mode=prefill_mode,
+        location_title=location_title,
+        publish_enabled=ENABLE_PUBLISH,
+        publish_ui_enabled=PUBLISH_UI_ENABLED,
+        publish_ready=publish_ready,
+        publish_missing=publish_missing,
+        publish_dry_run=PUBLISH_DRY_RUN,
+        google_check_url=google_check_url,
+    )
+
+# --------------------------------------------------------
+# Generator
+# --------------------------------------------------------
+
+def _first_non_empty_pairs(reviews: List[str], ratings: List[str]):
+    pairs = []
+    for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
+        if (rev or "").strip():
+            rat = ratings[idx] if idx < len(ratings) else ""
+            pairs.append((rev.strip(), str(rat)))
+    return pairs
+
 @app.post("/generate")
 def generate():
     rid = (request.form.get("rid") or "").strip()
@@ -351,96 +411,9 @@ def generate():
             max_tokens=1024,
             system=(
                 "Du bist das Kommunikationsteam von NOVOTERGUM, einer physiotherapeutischen Praxisgruppe in Deutschland. "
-                "Du verfasst öffentliche Antworten auf Online-Bewertungen im Namen der jeweiligen Praxis. "
-                "Schreibe immer höflich, wertschätzend und professionell. "
-                "Klingt wie ein echter Mensch aus dem Team – kein Corporate-Sprech, keine KI-Floskeln."
-            ),
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        raw = (response.content[0].text or "").strip()
-        public, insights = split_public_and_insights(raw)
-
-        replies_out.append({
-            "review": rev,
-            "reply": public,
-            "insights": insights,
-        })
-
-    if rid:
-        prefill_set_generated(rid, {"replies": replies_out})
-        return redirect(url_for("index", rid=rid))
-
-    return render_template(
-        "index.html",
-        values=values,
-        reviews=[{"review": r} for r in reviews],
-        replies=replies_out,
-        rid="",
-        prefill_mode=False,
-        location_title="",
-        publish_enabled=ENABLE_PUBLISH,
-        publish_ui_enabled=PUBLISH_UI_ENABLED,
-        publish_ready=False,
-        publish_missing=["accountId", "locationId", "reviewId"],
-        publish_dry_run=PUBLISH_DRY_RUN,
-        google_check_url=None,
-    )
-
-# --------------------------------------------------------
-# Generator
-# --------------------------------------------------------
-
-def _first_non_empty_pairs(reviews: List[str], ratings: List[str]):
-    pairs = []
-    for idx, rev in enumerate(reviews[:MAX_REVIEWS]):
-        if (rev or "").strip():
-            rat = ratings[idx] if idx < len(ratings) else ""
-            pairs.append((rev.strip(), str(rat)))
-    return pairs
-
-@app.post("/generate")
-def generate():
-    rid = (request.form.get("rid") or "").strip()
-
-    reviews = request.form.getlist("review")
-    ratings = request.form.getlist("rating")
-    salutations = request.form.getlist("salutation")
-    review_types = request.form.getlist("reviewType")
-
-    values = default_values()
-    values.update({
-        "selectedTone": request.form.get("selectedTone", values["selectedTone"]),
-        "corporateSignature": request.form.get("corporateSignature", values["corporateSignature"]),
-        "contactEmail": request.form.get("contactEmail", ""),
-    })
-
-    pairs = _first_non_empty_pairs(reviews, ratings)
-    if rid and pairs:
-        pairs = [pairs[0]]
-
-    replies_out = []
-
-for idx, (rev, rating) in enumerate(pairs):
-        prompt = build_prompt({
-            "review": rev,
-            "rating": rating,
-            "reviewType": review_types[idx] if idx < len(review_types) else "",
-            "salutation": salutations[idx] if idx < len(salutations) else "",
-            "selectedTone": values["selectedTone"],
-            "corporateSignature": values["corporateSignature"],
-            "contactEmail": values["contactEmail"],
-            "languageMode": values["languageMode"],
-        })
-
-        response = client.messages.create(
-            model="claude-sonnet-4-5",
-            max_tokens=1024,
-            system=(
-                "Du bist das Kommunikationsteam von NOVOTERGUM, einer physiotherapeutischen Praxisgruppe in Deutschland. "
-                "Du verfasst öffentliche Antworten auf Online-Bewertungen im Namen der jeweiligen Praxis. "
-                "Schreibe immer höflich, wertschätzend und professionell. "
-                "Klingt wie ein echter Mensch aus dem Team – kein Corporate-Sprech, keine KI-Floskeln."
+                "Du verfasst oeffentliche Antworten auf Online-Bewertungen im Namen der jeweiligen Praxis. "
+                "Schreibe immer hoeflich, wertschaetzend und professionell. "
+                "Klingt wie ein echter Mensch aus dem Team - kein Corporate-Sprech, keine KI-Floskeln."
             ),
             messages=[{"role": "user", "content": prompt}],
         )
