@@ -1,6 +1,4 @@
 import xml.etree.ElementTree as ET
-import json
-import re
 from typing import Dict, Any, Optional, Tuple
 
 # --------------------------------------------------------
@@ -57,16 +55,7 @@ def build_prompt(user_input: Dict[str, Any]) -> str:
         f"- Ausgewählter Tonfall (selectedTone): {selected_tone or '(nicht gesetzt)'}",
         f"- Sprache (languageMode): {language_mode}",
         "",
-        (
-            "Erzeuge jetzt die Ausgabe exakt in dem beschriebenen Format mit:\n"
-            "1) ÖFFENTLICHE ANTWORT:\n"
-            "   [öffentlicher Antworttext]\n"
-            "\n"
-            "2) INTERNE INSIGHTS (NICHT VERÖFFENTLICHEN):\n"
-            "   ```json\n"
-            "   { ... gültiges JSON gemäß Schema ... }\n"
-            "   ```"
-        ),
+        "Erzeuge jetzt ausschließlich den reinen öffentlichen Antworttext.",
     ]
 
     prompt = "\n".join(prompt_lines + [""] + context_lines).strip()
@@ -111,84 +100,9 @@ def evaluate_condition(condition: Optional[str], user_input: Dict[str, Any]) -> 
 # Modell-Output extrahieren
 # --------------------------------------------------------
 
-INSIGHTS_HEADER = "INTERNE INSIGHTS (NICHT VERÖFFENTLICHEN):"
-
-
 def split_public_and_insights(raw: str) -> Tuple[str, Optional[Dict[str, Any]]]:
     """
-    Zerlegt die Modellantwort in:
-      - public_text: öffentliche Antwort (String)
-      - insights: dict mit den internen Insights (oder None)
-
-    Erwartetes Modell-Format:
-
-    ÖFFENTLICHE ANTWORT:
-    [öffentlicher Antworttext ...]
-
-    INTERNE INSIGHTS (NICHT VERÖFFENTLICHEN):
-    ```json
-    {
-      ...
-    }
-    ```
+    Insights-Generierung wurde entfernt, um Output-Tokens zu sparen.
+    Signatur bleibt aus Kompatibilitätsgründen erhalten, insights ist immer None.
     """
-    if not raw:
-        return "", None
-
-    # Am Insights-Header splitten
-    parts = raw.split(INSIGHTS_HEADER, 1)
-    if len(parts) == 1:
-        # Kein Insights-Teil gefunden -> alles als öffentliche Antwort
-        public_only = raw.strip()
-        public_only = _strip_public_header(public_only)
-        return public_only, None
-
-    public_part = parts[0].strip()
-    insights_raw = parts[1]
-
-    # "ÖFFENTLICHE ANTWORT:" im Public-Part entfernen
-    public_part = _strip_public_header(public_part)
-
-    # JSON aus ```json ... ``` herausziehen
-    json_match = re.search(r"```json\s*(\{.*\})\s*```", insights_raw, flags=re.DOTALL | re.IGNORECASE)
-    if not json_match:
-        # Fallback: irgendeinen {}-Block greifen
-        brace_match = re.search(r"(\{.*\})", insights_raw, flags=re.DOTALL)
-        if not brace_match:
-            return public_part.strip(), None
-        json_str = brace_match.group(1)
-    else:
-        json_str = json_match.group(1)
-
-    insights = _safe_parse_json(json_str)
-    return public_part.strip(), insights
-
-
-def _strip_public_header(text: str) -> str:
-    """
-    Entfernt eine eventuell vorangestellte Zeile "ÖFFENTLICHE ANTWORT:" (case-insensitive).
-    """
-    return re.sub(
-        r"^\s*ÖFFENTLICHE ANTWORT:\s*",
-        "",
-        text,
-        flags=re.IGNORECASE,
-    ).strip()
-
-
-def _safe_parse_json(json_str: str) -> Optional[Dict[str, Any]]:
-    """
-    Robustes JSON-Parsing mit minimaler Bereinigung.
-    Gibt bei Fehlern None zurück, statt zu crashen.
-    """
-    if not json_str:
-        return None
-
-    try:
-        return json.loads(json_str)
-    except json.JSONDecodeError:
-        cleaned = json_str.replace("\r", " ").replace("\n", " ").strip()
-        try:
-            return json.loads(cleaned)
-        except Exception:
-            return None
+    return (raw or "").strip(), None
