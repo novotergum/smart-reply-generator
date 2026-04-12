@@ -187,57 +187,8 @@
     <!-- AUSGABEFORMAT -->
     <!-- ========================================================= -->
     <line>
-        WICHTIG: Erzeuge deine Ausgabe in GENAU ZWEI EBENEN:
-
-        1) ÖFFENTLICHE ANTWORT:
-           - Schreibe zuerst die Überschrift exakt so: ÖFFENTLICHE ANTWORT:
-           - Direkt darunter folgt die vollständige öffentliche Antwort,
-             so wie sie bei Google oder einem Bewertungsportal veröffentlicht werden könnte.
-           - In diesem Teil keine Erklärungen, kein JSON, keine technischen Hinweise.
-
-        2) INTERNE INSIGHTS (NICHT VERÖFFENTLICHEN):
-           - Schreibe danach eine Leerzeile.
-           - Schreibe dann die Überschrift exakt so: INTERNE INSIGHTS (NICHT VERÖFFENTLICHEN):
-           - Direkt darunter folgt ein gültiges JSON-Objekt innerhalb eines ```json```-Blocks.
-
-        JSON-Schema (Feldnamen nicht ändern, nur Werte ausfüllen):
-
-        ```json
-        {
-          "sentiment": "positive | neutral | negative",
-          "rating_inferred": 3,
-          "categories": [
-            "terminvergabe_erreichbarkeit",
-            "wartezeiten_vor_ort",
-            "therapiequalität_fachlichkeit",
-            "freundlichkeit_team",
-            "organisation_abläufe",
-            "fehlkommunikation_aufklärung",
-            "abrechnung_rezepte",
-            "managementkritik",
-            "unwahre_behauptungen_unterstellungen",
-            "sonstiges"
-          ],
-          "severity": 1,
-          "fairness": 1,
-          "impact_potential": 1,
-          "churn_risk": 1,
-          "legal_risk": "none | low | medium | high",
-          "core_issue": "kurze, präzise Zusammenfassung des Kernthemas",
-          "process_error": "vermutete Prozess- oder Kommunikationsschwäche",
-          "ideal_state": "wie der Ablauf idealerweise hätte sein sollen",
-          "recommended_actions": [
-            "konkrete Maßnahme 1",
-            "konkrete Maßnahme 2"
-          ],
-          "follow_up_required": true,
-          "suggested_owner": "z. B. Standortleitung oder Regionalleitung"
-        }
-        ```
-
-        Hinweise:
-        - Wähle bei "categories" 1 bis 3 passende Codes.
-        - Zahlenwerte sind ganzzahlig von 1 (sehr gering) bis 5 (sehr hoch).
-        - "follow_up_required" nur true, wenn intern wirklich nachgefasst werden sollte.
+        Gib ausschließlich den reinen Antworttext aus, ohne Überschriften,
+        ohne Labels, ohne JSON und ohne interne Analysen.
+        Die Ausgabe ist genau das, was öffentlich als Antwort erscheinen soll.
     </line>
 </prompt>
